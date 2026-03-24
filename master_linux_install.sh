@@ -209,9 +209,8 @@ download_files() {
         exit 1
     fi
 
-    # 获取最新版本的下载 URL（直接从 assets 中获取）
-    print_info "获取最新版本下载地址..."
-
+    # 获取最新版本信息
+    print_info "获取最新版本信息..."
     API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$API_URL")
 
     # 获取版本号
@@ -222,28 +221,29 @@ download_files() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 获取 jar 文件的下载链接
-    DOWNLOAD_URL=$(echo "$API_RESPONSE" | grep -o '"browser_download_url": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
-
-    if [ -z "$DOWNLOAD_URL" ]; then
-        print_error "未找到 jar 文件下载链接"
-        print_info "请检查 Release 中是否包含 .jar 文件"
+    # 获取 jar 文件名
+    JAR_NAME=$(echo "$API_RESPONSE" | grep -o '"name": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
+    if [ -z "$JAR_NAME" ]; then
+        print_error "未找到 jar 文件"
         exit 1
     fi
-
-    # 提取文件名
-    JAR_NAME=$(basename "$DOWNLOAD_URL")
-
     print_info "JAR 文件名: $JAR_NAME"
-    print_info "下载地址: $DOWNLOAD_URL"
 
-    # 下载
-    print_info "开始下载..."
-    if command -v wget &> /dev/null; then
-        wget --header="Authorization: token $GITHUB_TOKEN" -O "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
-    else
-        curl -L -H "Authorization: token $GITHUB_TOKEN" -o "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
+    # 获取 asset ID
+    ASSET_ID=$(echo "$API_RESPONSE" | grep -A 5 "\"name\": \"$JAR_NAME\"" | grep -o '"id": [0-9]*' | head -1 | cut -d' ' -f2)
+
+    if [ -z "$ASSET_ID" ]; then
+        print_error "无法获取 asset ID"
+        exit 1
     fi
+    print_info "Asset ID: $ASSET_ID"
+
+    # 通过 API 下载（这是私有仓库下载的正确方式）
+    print_info "开始下载..."
+    curl -L -H "Authorization: token $GITHUB_TOKEN" \
+         -H "Accept: application/octet-stream" \
+         -o "/opt/sui-master/$JAR_NAME" \
+         "https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
 
     # 检查下载是否成功
     if [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
@@ -252,14 +252,13 @@ download_files() {
     fi
 
     # 验证文件大小
-    if command -v stat &> /dev/null; then
-        FILE_SIZE=$(stat -c%s "/opt/sui-master/$JAR_NAME" 2>/dev/null || stat -f%z "/opt/sui-master/$JAR_NAME" 2>/dev/null)
-        if [ "$FILE_SIZE" -eq 0 ]; then
-            print_error "下载的文件为空，下载失败"
-            exit 1
-        fi
-        print_info "文件大小: $FILE_SIZE bytes"
+    FILE_SIZE=$(stat -c%s "/opt/sui-master/$JAR_NAME" 2>/dev/null || stat -f%z "/opt/sui-master/$JAR_NAME" 2>/dev/null)
+    if [ "$FILE_SIZE" -eq 0 ]; then
+        print_error "下载的文件为空，下载失败"
+        exit 1
     fi
+
+    print_info "文件大小: $(numfmt --to=iec $FILE_SIZE)"
 
     chown suimaster:suimaster "/opt/sui-master/$JAR_NAME"
     print_info "文件下载完成"
