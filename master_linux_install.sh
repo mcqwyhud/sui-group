@@ -194,8 +194,9 @@ download_files() {
     print_info "下载文件..."
 
     GITHUB_REPO="mcqwyhud/sui-master"
-    API_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
-
+    VERSION="v0.0.1"
+    JAR_NAME="sui-master-0.0.1-SNAPSHOT.jar"
+    
     # 获取令牌
     if [ -z "$GITHUB_TOKEN" ]; then
         echo ""
@@ -209,61 +210,51 @@ download_files() {
         exit 1
     fi
 
-    # 获取最新版本信息
-    print_info "获取最新版本信息..."
-    API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$API_URL")
-
-    # 获取版本号
-    LATEST_VERSION=$(echo "$API_RESPONSE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
-    if [ -z "$LATEST_VERSION" ]; then
-        print_error "无法获取最新版本，请检查令牌和仓库设置"
-        exit 1
-    fi
-    print_info "最新版本: $LATEST_VERSION"
-
-    # 获取 jar 文件名
-    JAR_NAME=$(echo "$API_RESPONSE" | grep -o '"name": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
-    if [ -z "$JAR_NAME" ]; then
-        print_error "未找到 jar 文件"
-        exit 1
-    fi
-    print_info "JAR 文件名: $JAR_NAME"
-
-    # 获取 asset ID
-    ASSET_ID=$(echo "$API_RESPONSE" | grep -A 5 "\"name\": \"$JAR_NAME\"" | grep -o '"id": [0-9]*' | head -1 | cut -d' ' -f2)
-
+    print_info "获取 release 信息..."
+    
+    # 获取完整的 release 信息
+    RELEASE_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+        "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$VERSION")
+    
+    # 保存到文件以便调试
+    echo "$RELEASE_INFO" > /tmp/release_info.json
+    
+    # 查找 jar 文件的 asset ID（更精确的匹配）
+    ASSET_ID=$(echo "$RELEASE_INFO" | grep -B 10 "\"name\": \"$JAR_NAME\"" | grep -o '"id": [0-9]*' | head -1 | awk '{print $2}')
+    
     if [ -z "$ASSET_ID" ]; then
         print_error "无法获取 asset ID"
+        print_info "请检查 /tmp/release_info.json 文件"
         exit 1
     fi
+    
     print_info "Asset ID: $ASSET_ID"
-
-    # 通过 API 下载（这是私有仓库下载的正确方式）
+    
+    # 通过 API 下载
     print_info "开始下载..."
     curl -L -H "Authorization: token $GITHUB_TOKEN" \
          -H "Accept: application/octet-stream" \
          -o "/opt/sui-master/$JAR_NAME" \
          "https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
-
+    
     # 检查下载是否成功
     if [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
         print_error "文件下载失败"
         exit 1
     fi
 
-    # 验证文件大小
+    # 验证文件大小（应该大于 1MB）
     FILE_SIZE=$(stat -c%s "/opt/sui-master/$JAR_NAME" 2>/dev/null || stat -f%z "/opt/sui-master/$JAR_NAME" 2>/dev/null)
-    if [ "$FILE_SIZE" -eq 0 ]; then
-        print_error "下载的文件为空，下载失败"
+    if [ "$FILE_SIZE" -lt 1000000 ]; then
+        print_error "文件大小异常: $FILE_SIZE 字节（应该大于 1MB）"
+        print_info "下载可能失败，请检查网络或 token 权限"
         exit 1
     fi
-
-    print_info "文件大小: $(numfmt --to=iec $FILE_SIZE)"
+    
+    print_info "文件下载完成 (大小: $(numfmt --to=iec $FILE_SIZE))"
 
     chown suimaster:suimaster "/opt/sui-master/$JAR_NAME"
-    print_info "文件下载完成"
 }
-
 # 创建 systemd 服务文件
 create_service() {
     print_info "创建 systemd 服务..."
