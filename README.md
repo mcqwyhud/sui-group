@@ -13,9 +13,9 @@
 bash <(curl -Ls https://raw.githubusercontent.com/mcqwyhud/sui-group/main/agent_linux_install.sh)
 ```
 
-### sui-client 安装
+### sui-external 安装
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/mcqwyhud/sui-group/main/client_linux_install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/mcqwyhud/sui-group/main/external_linux_install.sh)
 ```
 
 ### sui-master 安装
