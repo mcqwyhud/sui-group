@@ -1,6 +1,6 @@
 #!/bin/bash
 # SUI Agent 一键安装脚本
-# 基于 sui-external 的安装脚本结构
+# 基于 alireza0/s-ui 的安装脚本结构改进
 # 支持 Linux 系统，自动安装依赖，从私有仓库下载 jar 并部署为 systemd 服务
 
 set -e
@@ -95,12 +95,10 @@ install_java() {
         fi
     fi
 
-    print_info "正在安装 Java 21 (Oracle JDK) ..."
+    print_info "正在安装 Java 21..."
 
-    # 根据操作系统选择安装方式
     case "${OS}" in
         ubuntu|debian)
-            # 对于 Debian/Ubuntu，使用 OpenJDK 21
             apt-get update
             apt-get install -y openjdk-21-jre-headless
             ;;
@@ -110,29 +108,17 @@ install_java() {
         fedora)
             dnf install -y java-21-openjdk-headless
             ;;
-        arch|manjaro)
-            pacman -S --noconfirm jdk21-openjdk
-            ;;
         *)
-            # 默认尝试下载 Oracle JDK（仅支持 x86_64）
-            ARCH=$(get_arch)
-            if [ "$ARCH" = "amd64" ]; then
-                cd /tmp
-                wget -q https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.deb
-                dpkg -i ./jdk-21_linux-x64_bin.deb 2>/dev/null || apt install -y ./jdk-21_linux-x64_bin.deb
-                rm -f jdk-21_linux-x64_bin.deb
-            else
-                print_error "无法自动安装 Java，请手动安装 Java 21"
-                exit 1
-            fi
+            print_error "不支持的操作系统: $OS，请手动安装 Java 21"
+            exit 1
             ;;
     esac
 
     # 验证安装
     if command -v java &> /dev/null; then
-        print_info "Java 21 安装成功: $(java -version 2>&1 | head -1)"
+        print_info "Java 安装成功: $(java -version 2>&1 | head -1)"
     else
-        print_error "Java 21 安装失败"
+        print_error "Java 安装失败"
         exit 1
     fi
 }
@@ -156,7 +142,7 @@ setup_user_and_dir() {
 download_jar() {
     print_info "下载文件..."
 
-    GITHUB_REPO="mcqwyhud/sui-agent"   # 你的仓库名
+    GITHUB_REPO="mcqwyhud/sui-agent"
     RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
     # 获取令牌
@@ -172,40 +158,61 @@ download_jar() {
         exit 1
     fi
 
-    # 获取最新版本 tag
+    # 获取最新版本信息
     print_info "获取最新版本信息..."
-    LATEST_VERSION=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
+    API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL")
+
+    # 获取版本号
+    LATEST_VERSION=$(echo "$API_RESPONSE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
     if [ -z "$LATEST_VERSION" ]; then
         print_error "无法获取最新版本，请检查令牌和仓库设置"
         exit 1
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 获取 jar 文件名（假设只有一个 .jar 文件）
-    JAR_NAME=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL" | grep -o '"name": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
-    if [ -z "$JAR_NAME" ]; then
-        print_error "发布版本中未找到 jar 文件"
+    # 获取 jar 文件的下载链接（直接从 assets 中获取）
+    DOWNLOAD_URL=$(echo "$API_RESPONSE" | grep -o '"browser_download_url": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
+
+    if [ -z "$DOWNLOAD_URL" ]; then
+        print_error "未找到 jar 文件下载链接"
+        print_info "请检查 Release 中是否包含 .jar 文件"
         exit 1
     fi
-    print_info "JAR 文件名: $JAR_NAME"
 
-    # 构建下载 URL
-    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/$JAR_NAME"
+    # 提取文件名
+    JAR_NAME=$(basename "$DOWNLOAD_URL")
+
+    print_info "JAR 文件名: $JAR_NAME"
+    print_info "下载地址: $DOWNLOAD_URL"
 
     # 下载
+    print_info "开始下载..."
     if command -v wget &> /dev/null; then
-        wget --header="Authorization: token $GITHUB_TOKEN" -O "/opt/sui-agent/$JAR_NAME" "$DOWNLOAD_URL"
+        wget --header="Authorization: token $GITHUB_TOKEN" \
+             --header="Accept: application/octet-stream" \
+             -O "/opt/sui-agent/$JAR_NAME" "$DOWNLOAD_URL"
     else
-        curl -L -H "Authorization: token $GITHUB_TOKEN" -o "/opt/sui-agent/$JAR_NAME" "$DOWNLOAD_URL"
+        curl -L -H "Authorization: token $GITHUB_TOKEN" \
+             -H "Accept: application/octet-stream" \
+             -o "/opt/sui-agent/$JAR_NAME" "$DOWNLOAD_URL"
     fi
 
+    # 检查下载是否成功
     if [ ! -f "/opt/sui-agent/$JAR_NAME" ]; then
         print_error "文件下载失败"
         exit 1
     fi
 
+    # 验证文件大小（应该大于 1MB）
+    FILE_SIZE=$(stat -c%s "/opt/sui-agent/$JAR_NAME" 2>/dev/null || stat -f%z "/opt/sui-agent/$JAR_NAME" 2>/dev/null)
+    if [ "$FILE_SIZE" -lt 1000000 ]; then
+        print_error "文件大小异常: $FILE_SIZE 字节（应该大于 1MB）"
+        exit 1
+    fi
+
+    print_info "文件下载完成 (大小: $(numfmt --to=iec $FILE_SIZE 2>/dev/null || echo "$FILE_SIZE bytes"))"
+
     chown suiagent:suiagent "/opt/sui-agent/$JAR_NAME"
-    print_info "文件下载完成"
 }
 
 # 创建 systemd 服务文件
@@ -219,7 +226,7 @@ create_service() {
     fi
     print_info "使用 JAR 文件: $JAR_FILE"
 
-    # JVM 内存配置（Agent 通常轻量级，设置较小内存）
+    # JVM 内存配置（Agent 轻量级配置）
     JVM_OPTS="-Xms32m -Xmx64m -XX:MaxMetaspaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:MaxDirectMemorySize=16m"
 
     SERVICE_FILE="/etc/systemd/system/sui-agent.service"
