@@ -60,25 +60,87 @@ get_arch() {
 }
 
 # 安装基础工具（wget, curl, tar, tzdata 等）
+# 安装基础工具（只在需要时安装）
 install_base() {
-    print_info "安装基础工具..."
+    print_info "检查基础工具..."
+
+    # 定义需要检查的工具
+    local tools=("wget" "curl" "tar" "tzdata")
+    local missing_tools=()
+
+    # 检查哪些工具缺失
+    for tool in "${tools[@]}"; do
+        if ! command -v "$tool" &> /dev/null; then
+            # tzdata 特殊处理（它不是一个命令，而是一个包）
+            if [ "$tool" != "tzdata" ]; then
+                missing_tools+=("$tool")
+            fi
+        fi
+    done
+
+    # 检查 tzdata 是否安装
+    if [ ! -d "/usr/share/zoneinfo" ]; then
+        missing_tools+=("tzdata")
+    fi
+
+    # 如果没有缺失工具，直接返回
+    if [ ${#missing_tools[@]} -eq 0 ]; then
+        print_info "基础工具已安装 (wget, curl, tar, tzdata)"
+        return 0
+    fi
+
+    print_info "需要安装的工具: ${missing_tools[*]}"
+
+    # 检查是否需要更新包缓存（如果超过1天未更新）
+    local need_update=false
     case "${OS}" in
-        centos | almalinux | rocky | oracle)
-            yum -y update && yum install -y -q wget curl tar tzdata
+        ubuntu|debian)
+            if [ ! -f /var/lib/apt/lists/lock ] || [ $(find /var/lib/apt/lists/ -name "*.deb" -mtime +1 2>/dev/null | wc -l) -gt 0 ]; then
+                need_update=true
+            fi
             ;;
-        fedora)
-            dnf -y update && dnf install -y -q wget curl tar tzdata
-            ;;
-        arch | manjaro | parch)
-            pacman -Syu && pacman -Syu --noconfirm wget curl tar tzdata
-            ;;
-        opensuse-tumbleweed)
-            zypper refresh && zypper -q install -y wget curl tar timezone
-            ;;
-        *)
-            apt-get update && apt-get install -y -q wget curl tar tzdata
+        centos|almalinux|rocky|oracle|rhel|fedora)
+            if [ ! -f /var/cache/yum/timestamp.txt ] || [ $(find /var/cache/yum -name "*.rpm" -mtime +1 2>/dev/null | wc -l) -gt 0 ]; then
+                need_update=true
+            fi
             ;;
     esac
+
+    if [ "$need_update" = true ]; then
+        print_info "更新软件包缓存..."
+        case "${OS}" in
+            ubuntu|debian) apt-get update -qq ;;
+            centos|almalinux|rocky|oracle|rhel) yum makecache -q ;;
+            fedora) dnf makecache -q ;;
+            arch|manjaro|parch) pacman -Sy --noconfirm --quiet ;;
+            opensuse-tumbleweed) zypper refresh -q ;;
+        esac
+    fi
+
+    # 只安装缺失的工具
+    print_info "安装缺失的基础工具..."
+    case "${OS}" in
+        ubuntu|debian)
+            apt-get install -y -qq "${missing_tools[@]}"
+            ;;
+        centos|almalinux|rocky|oracle|rhel)
+            yum install -y -q "${missing_tools[@]}"
+            ;;
+        fedora)
+            dnf install -y -q "${missing_tools[@]}"
+            ;;
+        arch|manjaro|parch)
+            pacman -Syu --noconfirm --quiet "${missing_tools[@]}"
+            ;;
+        opensuse-tumbleweed)
+            zypper -q install -y "${missing_tools[@]}"
+            ;;
+        *)
+            print_error "不支持的操作系统: $OS"
+            exit 1
+            ;;
+    esac
+
     print_info "基础工具安装完成"
 }
 

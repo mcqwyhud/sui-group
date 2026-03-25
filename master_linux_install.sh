@@ -45,26 +45,108 @@ detect_os() {
     print_info "检测到操作系统: $OS $VERSION"
 }
 
-# 安装基础工具
+# 安装基础工具（只在需要时安装）
 install_base() {
-    print_info "安装基础工具..."
+    print_info "检查基础工具..."
+
+    # 定义需要检查的工具
+    local tools=("wget" "curl" "tar" "tzdata")
+    local missing_tools=()
+
+    # 检查哪些工具缺失
+    for tool in "${tools[@]}"; do
+        if ! command -v "$tool" &> /dev/null; then
+            # tzdata 特殊处理（它不是一个命令，而是一个包）
+            if [ "$tool" != "tzdata" ]; then
+                missing_tools+=("$tool")
+            fi
+        fi
+    done
+
+    # 检查 tzdata 是否安装
+    if [ ! -d "/usr/share/zoneinfo" ]; then
+        missing_tools+=("tzdata")
+    fi
+
+    # 如果没有缺失工具，直接返回
+    if [ ${#missing_tools[@]} -eq 0 ]; then
+        print_info "基础工具已安装 (wget, curl, tar, tzdata)"
+        return 0
+    fi
+
+    print_info "需要安装的工具: ${missing_tools[*]}"
+
+    # 检查是否需要更新包缓存（如果超过1天未更新）
+    local need_update=false
     case "${OS}" in
-        centos|almalinux|rocky|oracle)
-            yum -y update && yum install -y -q wget curl tar tzdata
+        ubuntu|debian)
+            if [ ! -f /var/lib/apt/lists/lock ] || [ $(find /var/lib/apt/lists/ -name "*.deb" -mtime +1 2>/dev/null | wc -l) -gt 0 ]; then
+                need_update=true
+            fi
+            ;;
+        centos|almalinux|rocky|oracle|rhel)
+            if [ ! -f /var/cache/yum/timestamp.txt ] || [ $(find /var/cache/yum -name "*.rpm" -mtime +1 2>/dev/null | wc -l) -gt 0 ]; then
+                need_update=true
+            fi
             ;;
         fedora)
-            dnf -y update && dnf install -y -q wget curl tar tzdata
+            if [ ! -f /var/cache/dnf/timestamp.txt ] || [ $(find /var/cache/dnf -name "*.rpm" -mtime +1 2>/dev/null | wc -l) -gt 0 ]; then
+                need_update=true
+            fi
             ;;
         arch|manjaro|parch)
-            pacman -Syu && pacman -Syu --noconfirm wget curl tar tzdata
+            # Arch 通常不需要频繁更新
+            need_update=false
             ;;
         opensuse-tumbleweed)
-            zypper refresh && zypper -q install -y wget curl tar timezone
-            ;;
-        *)
-            apt-get update && apt-get install -y -q wget curl tar tzdata
+            if [ ! -f /var/cache/zypp/timestamp.txt ] || [ $(find /var/cache/zypp -name "*.rpm" -mtime +1 2>/dev/null | wc -l) -gt 0 ]; then
+                need_update=true
+            fi
             ;;
     esac
+
+    if [ "$need_update" = true ]; then
+        print_info "更新软件包缓存..."
+        case "${OS}" in
+            ubuntu|debian)
+                apt-get update -qq
+                ;;
+            centos|almalinux|rocky|oracle|rhel)
+                yum makecache -q
+                ;;
+            fedora)
+                dnf makecache -q
+                ;;
+            opensuse-tumbleweed)
+                zypper refresh -q
+                ;;
+        esac
+    fi
+
+    # 只安装缺失的工具
+    print_info "安装缺失的基础工具..."
+    case "${OS}" in
+        centos|almalinux|rocky|oracle)
+            yum install -y -q "${missing_tools[@]}"
+            ;;
+        fedora)
+            dnf install -y -q "${missing_tools[@]}"
+            ;;
+        arch|manjaro|parch)
+            pacman -Syu --noconfirm --quiet "${missing_tools[@]}"
+            ;;
+        opensuse-tumbleweed)
+            zypper -q install -y "${missing_tools[@]}"
+            ;;
+        ubuntu|debian)
+            apt-get install -y -qq "${missing_tools[@]}"
+            ;;
+        *)
+            print_error "不支持的操作系统: $OS"
+            exit 1
+            ;;
+    esac
+
     print_info "基础工具安装完成"
 }
 
@@ -196,7 +278,7 @@ download_files() {
     GITHUB_REPO="mcqwyhud/sui-master"
     VERSION="v0.0.1"
     JAR_NAME="sui-master-0.0.1-SNAPSHOT.jar"
-    
+
     # 获取令牌
     if [ -z "$GITHUB_TOKEN" ]; then
         echo ""
@@ -211,32 +293,32 @@ download_files() {
     fi
 
     print_info "获取 release 信息..."
-    
+
     # 获取完整的 release 信息
     RELEASE_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
         "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$VERSION")
-    
+
     # 保存到文件以便调试
     echo "$RELEASE_INFO" > /tmp/release_info.json
-    
+
     # 查找 jar 文件的 asset ID（更精确的匹配）
     ASSET_ID=$(echo "$RELEASE_INFO" | grep -B 10 "\"name\": \"$JAR_NAME\"" | grep -o '"id": [0-9]*' | head -1 | awk '{print $2}')
-    
+
     if [ -z "$ASSET_ID" ]; then
         print_error "无法获取 asset ID"
         print_info "请检查 /tmp/release_info.json 文件"
         exit 1
     fi
-    
+
     print_info "Asset ID: $ASSET_ID"
-    
+
     # 通过 API 下载
     print_info "开始下载..."
     curl -L -H "Authorization: token $GITHUB_TOKEN" \
          -H "Accept: application/octet-stream" \
          -o "/opt/sui-master/$JAR_NAME" \
          "https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
-    
+
     # 检查下载是否成功
     if [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
         print_error "文件下载失败"
@@ -250,7 +332,7 @@ download_files() {
         print_info "下载可能失败，请检查网络或 token 权限"
         exit 1
     fi
-    
+
     print_info "文件下载完成 (大小: $(numfmt --to=iec $FILE_SIZE))"
 
     chown suimaster:suimaster "/opt/sui-master/$JAR_NAME"
