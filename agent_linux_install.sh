@@ -289,7 +289,8 @@ create_service() {
     print_info "使用 JAR 文件: $JAR_FILE"
 
     # JVM 内存配置（Agent 轻量级配置）
-    JVM_OPTS="-Xms32m -Xmx64m -XX:MaxMetaspaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:MaxDirectMemorySize=16m"
+    # 注意：由于应用使用了 Protobuf 动态代理，需要较大的 Metaspace
+    JVM_OPTS="-Xms64m -Xmx128m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=32m -XX:MaxDirectMemorySize=32m"
 
     SERVICE_FILE="/etc/systemd/system/sui-agent.service"
     > "$SERVICE_FILE"
