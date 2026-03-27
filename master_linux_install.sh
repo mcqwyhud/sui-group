@@ -50,7 +50,7 @@ install_base() {
     print_info "检查基础工具..."
 
     # 定义需要检查的工具
-    local tools=("wget" "curl" "tar" "tzdata")
+    local tools=("wget" "curl" "tar" "tzdata" "jq")
     local missing_tools=()
 
     # 检查哪些工具缺失
@@ -70,7 +70,7 @@ install_base() {
 
     # 如果没有缺失工具，直接返回
     if [ ${#missing_tools[@]} -eq 0 ]; then
-        print_info "基础工具已安装 (wget, curl, tar, tzdata)"
+        print_info "基础工具已安装 (wget, curl, tar, tzdata, jq)"
         return 0
     fi
 
@@ -95,7 +95,6 @@ install_base() {
             fi
             ;;
         arch|manjaro|parch)
-            # Arch 通常不需要频繁更新
             need_update=false
             ;;
         opensuse-tumbleweed)
@@ -191,63 +190,62 @@ install_java() {
     fi
 }
 
-# 安装MySQL
+# 安装MySQL（如果未安装则安装）
 install_mysql() {
     print_info "检查 MySQL 环境..."
 
     if command -v mysql &> /dev/null; then
         MYSQL_VERSION=$(mysql --version | awk '{print $5}' | sed 's/,//')
         print_info "已安装 MySQL 版本: $MYSQL_VERSION"
-    else
-        print_info "安装 MySQL..."
-        case "${OS}" in
-            ubuntu|debian)
-                export DEBIAN_FRONTEND=noninteractive
-                debconf-set-selections <<< "mysql-server mysql-server/root_password password c123456"
-                debconf-set-selections <<< "mysql-server mysql-server/root_password_again password c123456"
-                apt-get update
-                apt-get install -y mysql-server
-                ;;
-            centos|rhel|almalinux|rocky|oracle)
-                yum install -y mysql-server
-                systemctl start mysqld
-                systemctl enable mysqld
-                # 获取临时密码
-                if [ -f /var/log/mysqld.log ]; then
-                    TEMP_PASSWORD=$(grep 'temporary password' /var/log/mysqld.log | tail -n 1 | awk '{print $NF}')
-                    if [ -n "$TEMP_PASSWORD" ]; then
-                        mysql -u root -p"$TEMP_PASSWORD" --connect-expired-password -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'c123456';"
-                    fi
-                fi
-                ;;
-            fedora)
-                dnf install -y mysql-server
-                systemctl start mysqld
-                systemctl enable mysqld
-                ;;
-            *)
-                print_error "不支持的操作系统: $OS，请手动安装 MySQL"
-                exit 1
-                ;;
-        esac
-        print_info "MySQL 安装完成"
+
+        # 检查数据库是否存在
+        if mysql -u root -pc123456 -e "USE \`s-ui\`;" 2>/dev/null; then
+            print_info "数据库 's-ui' 已存在"
+        else
+            print_warning "数据库 's-ui' 不存在，正在创建..."
+            mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || {
+                print_warning "无法自动创建数据库，请手动执行："
+                echo "  mysql -u root -p -e \"CREATE DATABASE \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\""
+            }
+        fi
+        return
     fi
 
-    # 确保MySQL服务正在运行
-    if systemctl list-unit-files | grep -q mysqld; then
-        systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null
-        systemctl enable mysqld 2>/dev/null || systemctl enable mysql 2>/dev/null
-    elif service --status-all 2>&1 | grep -q mysql; then
-        service mysql start
-    fi
+    print_info "未检测到 MySQL，正在安装..."
+
+    case "${OS}" in
+        ubuntu|debian)
+            export DEBIAN_FRONTEND=noninteractive
+            debconf-set-selections <<< "mysql-server mysql-server/root_password password c123456"
+            debconf-set-selections <<< "mysql-server mysql-server/root_password_again password c123456"
+            apt-get update
+            apt-get install -y mysql-server
+            ;;
+        centos|rhel|almalinux|rocky|oracle)
+            yum install -y mysql-server
+            systemctl start mysqld
+            systemctl enable mysqld
+            ;;
+        fedora)
+            dnf install -y mysql-server
+            systemctl start mysqld
+            systemctl enable mysqld
+            ;;
+        *)
+            print_error "不支持的操作系统: $OS，请手动安装 MySQL"
+            exit 1
+            ;;
+    esac
+    print_info "MySQL 安装完成"
 
     # 等待MySQL启动
-    sleep 3
+    sleep 5
 
-    # 创建数据库（如果不存在）
+    # 创建数据库
     print_info "创建数据库..."
     mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || {
-        print_warning "无法连接MySQL，请手动创建数据库: CREATE DATABASE \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+        print_warning "无法创建数据库，请手动执行："
+        echo "  mysql -u root -p -e \"CREATE DATABASE \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\""
     }
     print_info "数据库创建完成"
 }
@@ -265,19 +263,25 @@ setup_user_and_dir() {
     # 创建目录
     mkdir -p /opt/sui-master/{config,logs,uploads,config/web/static}
 
+    # 创建临时目录并设置权限（修复权限问题）
+    mkdir -p /tmp/JPROTOBUF_CACHE_DIR
+    chown -R suimaster:suimaster /tmp/JPROTOBUF_CACHE_DIR
+    chmod 755 /tmp/JPROTOBUF_CACHE_DIR
+
     # 设置权限
     chown -R suimaster:suimaster /opt/sui-master
+
+    # 额外确保日志目录权限正确（修复日志写入问题）
+    chmod 755 /opt/sui-master/logs
 
     print_info "目录创建完成"
 }
 
-# 下载最新 Release 中的 jar 文件
-download_files() {
-    print_info "下载文件..."
-
+# 获取最新版本信息
+get_latest_release() {
     GITHUB_REPO="mcqwyhud/sui-master"
-    VERSION="v0.0.1"
-    JAR_NAME="sui-master-0.0.1-SNAPSHOT.jar"
+
+    print_info "获取最新版本信息..."
 
     # 获取令牌
     if [ -z "$GITHUB_TOKEN" ]; then
@@ -292,19 +296,41 @@ download_files() {
         exit 1
     fi
 
-    print_info "获取 release 信息..."
-
-    # 获取完整的 release 信息
+    # 获取最新的 release 信息
     RELEASE_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-        "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$VERSION")
+        "https://api.github.com/repos/$GITHUB_REPO/releases/latest")
 
-    # 保存到文件以便调试
+    # 检查是否成功
+    if echo "$RELEASE_INFO" | grep -q "Not Found"; then
+        print_error "无法访问仓库或仓库不存在"
+        exit 1
+    fi
+
+    # 提取版本号
+    LATEST_VERSION=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+
+    if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
+        print_error "无法获取最新版本信息"
+        exit 1
+    fi
+
+    print_info "最新版本: $LATEST_VERSION"
+
+    # 保存 release 信息
     echo "$RELEASE_INFO" > /tmp/release_info.json
+}
 
-    # 查找 jar 文件的 asset ID（更精确的匹配）
-    ASSET_ID=$(echo "$RELEASE_INFO" | grep -B 10 "\"name\": \"$JAR_NAME\"" | grep -o '"id": [0-9]*' | head -1 | awk '{print $2}')
+# 下载并验证 JAR 文件
+download_and_verify() {
+    GITHUB_REPO="mcqwyhud/sui-master"
+    JAR_NAME="sui-master-0.0.1-SNAPSHOT.jar"
 
-    if [ -z "$ASSET_ID" ]; then
+    print_info "下载文件..."
+
+    # 获取 asset ID
+    ASSET_ID=$(cat /tmp/release_info.json | jq -r ".assets[] | select(.name == \"$JAR_NAME\") | .id")
+
+    if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "null" ]; then
         print_error "无法获取 asset ID"
         print_info "请检查 /tmp/release_info.json 文件"
         exit 1
@@ -312,7 +338,7 @@ download_files() {
 
     print_info "Asset ID: $ASSET_ID"
 
-    # 通过 API 下载
+    # 下载文件
     print_info "开始下载..."
     curl -L -H "Authorization: token $GITHUB_TOKEN" \
          -H "Accept: application/octet-stream" \
@@ -325,7 +351,7 @@ download_files() {
         exit 1
     fi
 
-    # 验证文件大小（应该大于 1MB）
+    # 验证文件大小
     FILE_SIZE=$(stat -c%s "/opt/sui-master/$JAR_NAME" 2>/dev/null || stat -f%z "/opt/sui-master/$JAR_NAME" 2>/dev/null)
     if [ "$FILE_SIZE" -lt 1000000 ]; then
         print_error "文件大小异常: $FILE_SIZE 字节（应该大于 1MB）"
@@ -333,10 +359,30 @@ download_files() {
         exit 1
     fi
 
-    print_info "文件下载完成 (大小: $(numfmt --to=iec $FILE_SIZE))"
+    print_info "文件大小: $(numfmt --to=iec $FILE_SIZE)"
 
+    # 验证 JAR 文件完整性
+    print_info "验证 JAR 文件完整性..."
+    if unzip -t "/opt/sui-master/$JAR_NAME" 2>&1 | grep -q "bad CRC"; then
+        print_error "JAR 文件完整性验证失败 (CRC 错误)"
+        exit 1
+    fi
+
+    # 验证特定文件（ip2region_v4.xdb）
+    if unzip -t "/opt/sui-master/$JAR_NAME" 2>&1 | grep -q "ip2region_v4.xdb.*bad CRC"; then
+        print_error "JAR 文件中的 ip2region_v4.xdb 文件损坏"
+        exit 1
+    fi
+
+    print_info "JAR 文件完整性验证通过"
+
+    # 设置权限
     chown suimaster:suimaster "/opt/sui-master/$JAR_NAME"
+    chmod 755 "/opt/sui-master/$JAR_NAME"
+
+    print_info "文件下载完成"
 }
+
 # 创建 systemd 服务文件
 create_service() {
     print_info "创建 systemd 服务..."
@@ -348,28 +394,36 @@ create_service() {
     fi
     print_info "使用 JAR 文件: $JAR_FILE"
 
-    # JVM 内存配置（可根据需要调整）
-    # Master 服务需要更多内存（MySQL 连接、多用户管理等）
+    # 确保日志目录存在且有正确权限（修复日志写入问题）
+    mkdir -p /opt/sui-master/logs
+    chown -R suimaster:suimaster /opt/sui-master/logs
+    chmod 755 /opt/sui-master/logs
+
+    # JVM 内存配置（保持原配置）
     JVM_OPTS="-Xms128m -Xmx256m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -XX:MaxDirectMemorySize=64m"
+    # 添加临时目录配置（修复权限问题）
+    JVM_OPTS="$JVM_OPTS -Djava.io.tmpdir=/tmp -Djprotobuf.cache.dir=/tmp/JPROTOBUF_CACHE_DIR"
 
     SERVICE_FILE="/etc/systemd/system/sui-master.service"
-    > "$SERVICE_FILE"
-    echo "[Unit]" >> "$SERVICE_FILE"
-    echo "Description=SUI Master Service" >> "$SERVICE_FILE"
-    echo "After=network.target mysql.service" >> "$SERVICE_FILE"
-    echo "" >> "$SERVICE_FILE"
-    echo "[Service]" >> "$SERVICE_FILE"
-    echo "Type=simple" >> "$SERVICE_FILE"
-    echo "User=suimaster" >> "$SERVICE_FILE"
-    echo "WorkingDirectory=/opt/sui-master" >> "$SERVICE_FILE"
-    echo "ExecStart=/usr/bin/java ${JVM_OPTS} -jar ${JAR_FILE}" >> "$SERVICE_FILE"
-    echo "Restart=on-failure" >> "$SERVICE_FILE"
-    echo "RestartSec=10" >> "$SERVICE_FILE"
-    echo "StandardOutput=append:/opt/sui-master/logs/sui-master.log" >> "$SERVICE_FILE"
-    echo "StandardError=append:/opt/sui-master/logs/sui-master-error.log" >> "$SERVICE_FILE"
-    echo "" >> "$SERVICE_FILE"
-    echo "[Install]" >> "$SERVICE_FILE"
-    echo "WantedBy=multi-user.target" >> "$SERVICE_FILE"
+    cat > "$SERVICE_FILE" << EOF
+[Unit]
+Description=SUI Master Service
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=suimaster
+WorkingDirectory=/opt/sui-master
+Environment="JAVA_OPTS=${JVM_OPTS}"
+ExecStart=/usr/bin/java \$JAVA_OPTS -jar ${JAR_FILE}
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/opt/sui-master/logs/sui-master.log
+StandardError=append:/opt/sui-master/logs/sui-master-error.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
     systemctl daemon-reload
     systemctl enable sui-master
@@ -449,6 +503,10 @@ show_complete() {
     echo "数据库名称: s-ui"
     echo "数据库密码: c123456"
     echo ""
+    print_warning "首次启动后，请查看日志中的临时密码："
+    echo "  journalctl -u sui-master | grep 'Using generated security password'"
+    echo "  或查看日志文件: tail -f /opt/sui-master/logs/sui-master.log"
+    echo ""
 }
 
 # 主函数
@@ -460,7 +518,8 @@ main() {
     install_java
     install_mysql
     setup_user_and_dir
-    download_files
+    get_latest_release
+    download_and_verify
     create_service
     create_custom_command
     start_service
