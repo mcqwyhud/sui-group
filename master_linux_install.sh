@@ -254,32 +254,34 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 获取 jar 文件名（从 assets 中提取）
-    JAR_NAME=$(echo "$API_RESPONSE" | grep -o '"name": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
-    if [ -z "$JAR_NAME" ]; then
-        print_error "发布版本中未找到 jar 文件"
+    # 提取 jar 文件的 asset ID（通过匹配 name）
+    ASSET_ID=$(echo "$API_RESPONSE" | grep -o '"id": [0-9]*, "name": "sui-master-0.0.1-SNAPSHOT.jar"' | grep -o '[0-9]*' | head -1)
+    if [ -z "$ASSET_ID" ]; then
+        print_error "未找到 jar 文件的 asset ID"
         exit 1
     fi
-    print_info "JAR 文件名: $JAR_NAME"
+    print_info "Asset ID: $ASSET_ID"
 
-    # 提取 digest（SHA256）
+    # 提取 digest（包含 sha256）
     DIGEST=$(echo "$API_RESPONSE" | grep -o '"digest": "sha256:[^"]*"' | head -1 | cut -d'"' -f4)
     EXPECTED_SHA256=$(echo "$DIGEST" | sed 's/^sha256://')
+    JAR_NAME="sui-master-0.0.1-SNAPSHOT.jar"
 
-    # 构建下载 URL（使用 browser_download_url，与 External 脚本一致）
-    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/$JAR_NAME"
-
-    print_info "下载 JAR 文件..."
-    if command -v wget &> /dev/null; then
-        wget --header="Authorization: token $GITHUB_TOKEN" \
-             -O "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
+    if [ -n "$EXPECTED_SHA256" ]; then
+        print_info "期望 SHA256: $EXPECTED_SHA256"
     else
-        curl -L -H "Authorization: token $GITHUB_TOKEN" \
-             -o "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
+        print_warning "未获取到 digest 信息，将跳过 SHA256 校验"
     fi
 
+    print_info "下载 JAR 文件..."
+    ASSET_API_URL="https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
+    curl -L -H "Authorization: token $GITHUB_TOKEN" \
+         -H "Accept: application/octet-stream" \
+         -o "/opt/sui-master/$JAR_NAME" \
+         "$ASSET_API_URL"
+
     if [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
-        print_error "文件下载失败"
+        print_error "JAR 文件下载失败"
         exit 1
     fi
 
@@ -295,11 +297,11 @@ download_and_verify_jar() {
         fi
         print_info "SHA256 校验通过 ✓"
     else
-        print_warning "未获取到 digest 信息，跳过 SHA256 校验"
+        print_warning "跳过 SHA256 校验"
     fi
 
     chown suimaster:suimaster "/opt/sui-master/$JAR_NAME"
-    print_info "文件下载完成"
+    print_info "文件准备完成"
 }
 
 # 创建 systemd 服务
