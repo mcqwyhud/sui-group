@@ -2,6 +2,7 @@
 # SUI Agent 一键安装脚本
 # 基于 alireza0/s-ui 的安装脚本结构改进
 # 支持 Linux 系统，自动安装依赖，从私有仓库下载 jar 并部署为 systemd 服务
+# 改进：使用 jq + assets API，增加 SHA256 校验
 
 set -e
 
@@ -59,13 +60,12 @@ get_arch() {
     esac
 }
 
-# 安装基础工具（wget, curl, tar, tzdata 等）
-# 安装基础工具（只在需要时安装）
+# 安装基础工具（wget, curl, tar, tzdata, jq 等）
 install_base() {
     print_info "检查基础工具..."
 
-    # 定义需要检查的工具
-    local tools=("wget" "curl" "tar" "tzdata")
+    # 定义需要检查的工具（增加 jq）
+    local tools=("wget" "curl" "tar" "tzdata" "jq")
     local missing_tools=()
 
     # 检查哪些工具缺失
@@ -85,7 +85,7 @@ install_base() {
 
     # 如果没有缺失工具，直接返回
     if [ ${#missing_tools[@]} -eq 0 ]; then
-        print_info "基础工具已安装 (wget, curl, tar, tzdata)"
+        print_info "基础工具已安装 (wget, curl, tar, tzdata, jq)"
         return 0
     fi
 
@@ -200,7 +200,7 @@ setup_user_and_dir() {
     print_info "目录创建完成"
 }
 
-# 下载最新 Release 中的 jar 文件
+# 下载最新 Release 中的 jar 文件（使用 jq + assets API，增加 SHA256 校验）
 download_jar() {
     print_info "下载文件..."
 
@@ -224,45 +224,73 @@ download_jar() {
     print_info "获取最新版本信息..."
     API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL")
 
-    # 获取版本号
-    LATEST_VERSION=$(echo "$API_RESPONSE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
+    # 检查 API 响应是否有效
+    if echo "$API_RESPONSE" | grep -q '"message"'; then
+        ERROR_MSG=$(echo "$API_RESPONSE" | grep -o '"message": "[^"]*"' | cut -d'"' -f4)
+        print_error "API 请求失败: $ERROR_MSG"
+        print_info "请检查 GitHub 令牌权限和仓库访问权限"
+        exit 1
+    fi
+
+    # 提取版本号（用于显示）
+    LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name // empty')
     if [ -z "$LATEST_VERSION" ]; then
         print_error "无法获取最新版本，请检查令牌和仓库设置"
+        print_info "API 响应: $API_RESPONSE"
         exit 1
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 获取 jar 文件的下载链接（直接从 assets 中获取）
-    DOWNLOAD_URL=$(echo "$API_RESPONSE" | grep -o '"browser_download_url": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
+    # 提取第一个 .jar 资产的信息（名称、ID、digest，并去除 sha256: 前缀）
+    JAR_NAME=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith(".jar")) | .name' | head -1)
+    ASSET_ID=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith(".jar")) | .id' | head -1)
+    EXPECTED_SHA256=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith(".jar")) | .digest // ""' | head -1 | sed 's/^sha256://')
 
-    if [ -z "$DOWNLOAD_URL" ]; then
-        print_error "未找到 jar 文件下载链接"
-        print_info "请检查 Release 中是否包含 .jar 文件"
+    if [ -z "$JAR_NAME" ] || [ -z "$ASSET_ID" ]; then
+        print_error "发布版本中未找到 jar 文件"
+        print_info "可用的 assets:"
+        echo "$API_RESPONSE" | jq -r '.assets[].name' 2>/dev/null || echo "$API_RESPONSE" | grep -o '"name": "[^"]*"' | cut -d'"' -f4
         exit 1
     fi
-
-    # 提取文件名
-    JAR_NAME=$(basename "$DOWNLOAD_URL")
-
     print_info "JAR 文件名: $JAR_NAME"
-    print_info "下载地址: $DOWNLOAD_URL"
+    print_info "资产 ID: $ASSET_ID"
 
-    # 下载
-    print_info "开始下载..."
+    # 构建 assets API 下载 URL
+    ASSETS_DOWNLOAD_URL="https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
+
+    print_info "通过 assets API 下载 JAR 文件..."
+    DOWNLOAD_ERROR=false
     if command -v wget &> /dev/null; then
         wget --header="Authorization: token $GITHUB_TOKEN" \
              --header="Accept: application/octet-stream" \
-             -O "/opt/sui-agent/$JAR_NAME" "$DOWNLOAD_URL"
+             -O "/opt/sui-agent/$JAR_NAME" "$ASSETS_DOWNLOAD_URL" || DOWNLOAD_ERROR=true
     else
         curl -L -H "Authorization: token $GITHUB_TOKEN" \
              -H "Accept: application/octet-stream" \
-             -o "/opt/sui-agent/$JAR_NAME" "$DOWNLOAD_URL"
+             -o "/opt/sui-agent/$JAR_NAME" "$ASSETS_DOWNLOAD_URL" || DOWNLOAD_ERROR=true
     fi
 
-    # 检查下载是否成功
-    if [ ! -f "/opt/sui-agent/$JAR_NAME" ]; then
-        print_error "文件下载失败"
-        exit 1
+    # 如果 assets API 下载失败，回退到标准 Release URL
+    if [ "$DOWNLOAD_ERROR" = true ] || [ ! -f "/opt/sui-agent/$JAR_NAME" ]; then
+        print_warning "assets API 下载失败，尝试使用标准 Release URL..."
+        STANDARD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/$JAR_NAME"
+        DOWNLOAD_ERROR=false
+        if command -v wget &> /dev/null; then
+            wget --header="Authorization: token $GITHUB_TOKEN" \
+                 -O "/opt/sui-agent/$JAR_NAME" "$STANDARD_URL" || DOWNLOAD_ERROR=true
+        else
+            curl -L -H "Authorization: token $GITHUB_TOKEN" \
+                 -o "/opt/sui-agent/$JAR_NAME" "$STANDARD_URL" || DOWNLOAD_ERROR=true
+        fi
+        if [ "$DOWNLOAD_ERROR" = true ] || [ ! -f "/opt/sui-agent/$JAR_NAME" ]; then
+            print_error "所有下载方式均失败"
+            print_info "请检查:"
+            print_info "1. GitHub 令牌是否有正确的权限 (repo)"
+            print_info "2. 仓库是否为私有仓库"
+            print_info "3. Release 版本是否存在"
+            print_info "4. JAR 文件名是否正确"
+            exit 1
+        fi
     fi
 
     # 验证文件大小（应该大于 1MB）
@@ -270,6 +298,21 @@ download_jar() {
     if [ "$FILE_SIZE" -lt 1000000 ]; then
         print_error "文件大小异常: $FILE_SIZE 字节（应该大于 1MB）"
         exit 1
+    fi
+
+    # SHA256 校验
+    if [ -n "$EXPECTED_SHA256" ]; then
+        print_info "计算本地 JAR 的 SHA256..."
+        LOCAL_SHA256=$(sha256sum "/opt/sui-agent/$JAR_NAME" | awk '{print $1}')
+        if [ "$LOCAL_SHA256" != "$EXPECTED_SHA256" ]; then
+            print_error "SHA256 校验失败！"
+            print_info "期望: $EXPECTED_SHA256"
+            print_info "实际: $LOCAL_SHA256"
+            exit 1
+        fi
+        print_info "SHA256 校验通过 ✓"
+    else
+        print_warning "未获取到 digest 信息，跳过 SHA256 校验"
     fi
 
     print_info "文件下载完成 (大小: $(numfmt --to=iec $FILE_SIZE 2>/dev/null || echo "$FILE_SIZE bytes"))"
