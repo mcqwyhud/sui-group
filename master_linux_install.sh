@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# SUI Master 一键安装脚本
-# 参考 External 脚本的下载方式，增加 SHA256 校验
+# SUI Master 一键安装脚本（最终修正版）
+# 修复：asset ID 提取、SHA256 校验、日志权限、JVM 临时目录
 
 set -e
 
@@ -15,7 +15,6 @@ print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
-# 检查 root
 check_root() {
     if [ "$EUID" -ne 0 ]; then
         print_error "请使用 root 用户运行此脚本"
@@ -23,7 +22,6 @@ check_root() {
     fi
 }
 
-# 检测操作系统
 detect_os() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -36,13 +34,10 @@ detect_os() {
     print_info "检测到操作系统: $OS $VERSION"
 }
 
-# 安装基础工具（wget, curl, tar, tzdata）
 install_base() {
     print_info "检查基础工具..."
-
     local tools=("wget" "curl" "tar" "tzdata")
     local missing_tools=()
-
     for tool in "${tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
             if [ "$tool" != "tzdata" ]; then
@@ -50,18 +45,14 @@ install_base() {
             fi
         fi
     done
-
     if [ ! -d "/usr/share/zoneinfo" ]; then
         missing_tools+=("tzdata")
     fi
-
     if [ ${#missing_tools[@]} -eq 0 ]; then
         print_info "基础工具已安装 (wget, curl, tar, tzdata)"
         return 0
     fi
-
     print_info "需要安装的工具: ${missing_tools[*]}"
-
     local need_update=false
     case "${OS}" in
         ubuntu|debian)
@@ -80,7 +71,6 @@ install_base() {
             fi
             ;;
     esac
-
     if [ "$need_update" = true ]; then
         print_info "更新软件包缓存..."
         case "${OS}" in
@@ -89,7 +79,6 @@ install_base() {
             fedora) dnf makecache -q ;;
         esac
     fi
-
     print_info "安装缺失的基础工具..."
     case "${OS}" in
         centos|almalinux|rocky|oracle)
@@ -106,14 +95,11 @@ install_base() {
             exit 1
             ;;
     esac
-
     print_info "基础工具安装完成"
 }
 
-# 安装 Java 21
 install_java() {
     print_info "检查 Java 环境..."
-
     if command -v java &> /dev/null; then
         JAVA_VERSION=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d. -f1)
         if [ "$JAVA_VERSION" -ge 21 ]; then
@@ -121,7 +107,6 @@ install_java() {
             return
         fi
     fi
-
     print_info "正在安装 Java 21..."
     case "${OS}" in
         ubuntu|debian)
@@ -139,7 +124,6 @@ install_java() {
             exit 1
             ;;
     esac
-
     if command -v java &> /dev/null; then
         print_info "Java 安装成功: $(java -version 2>&1 | head -1)"
     else
@@ -148,10 +132,8 @@ install_java() {
     fi
 }
 
-# 安装 MySQL
 install_mysql() {
     print_info "检查 MySQL 环境..."
-
     if command -v mysql &> /dev/null; then
         MYSQL_VERSION=$(mysql --version | awk '{print $5}' | sed 's/,//')
         print_info "已安装 MySQL 版本: $MYSQL_VERSION"
@@ -166,7 +148,6 @@ install_mysql() {
         fi
         return
     fi
-
     print_info "未检测到 MySQL，正在安装..."
     case "${OS}" in
         ubuntu|debian)
@@ -192,7 +173,6 @@ install_mysql() {
             ;;
     esac
     print_info "MySQL 安装完成"
-
     sleep 5
     print_info "创建数据库..."
     mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || {
@@ -202,29 +182,22 @@ install_mysql() {
     print_info "数据库创建完成"
 }
 
-# 创建用户和目录
 setup_user_and_dir() {
     print_info "创建用户和目录..."
-
     if ! id -u suimaster &> /dev/null; then
         useradd -r -s /bin/false suimaster
         print_info "用户 suimaster 创建成功"
     fi
-
     mkdir -p /opt/sui-master/{config,logs,uploads,config/web/static}
-
-    # 修复权限问题：创建临时目录
+    # 修复临时目录权限
     mkdir -p /tmp/JPROTOBUF_CACHE_DIR
     chown -R suimaster:suimaster /tmp/JPROTOBUF_CACHE_DIR
     chmod 755 /tmp/JPROTOBUF_CACHE_DIR
-
     chown -R suimaster:suimaster /opt/sui-master
     chmod 755 /opt/sui-master/logs
-
     print_info "目录创建完成"
 }
 
-# 下载并验证 JAR（参照 External 脚本的下载方式，并增加 SHA256 校验）
 download_and_verify_jar() {
     print_info "下载文件..."
 
@@ -253,9 +226,9 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 将整个响应压缩成一行，再提取 asset ID（避免换行干扰）
+    # 关键修复：将整个响应压缩成一行，然后用 sed 提取 asset ID
     FLAT_RESPONSE=$(echo "$API_RESPONSE" | tr -d '\n')
-    ASSET_ID=$(echo "$FLAT_RESPONSE" | grep -o '"id": [0-9]*, "name": "sui-master-0.0.1-SNAPSHOT.jar"' | sed 's/.*"id": \([0-9]*\),.*/\1/')
+    ASSET_ID=$(echo "$FLAT_RESPONSE" | sed -n 's/.*"id": \([0-9]*\), "name": "sui-master-0.0.1-SNAPSHOT.jar".*/\1/p')
     if [ -z "$ASSET_ID" ]; then
         print_error "未找到 jar 文件的 asset ID"
         print_info "API 响应预览（前500字符）:"
@@ -304,10 +277,8 @@ download_and_verify_jar() {
     print_info "文件准备完成"
 }
 
-# 创建 systemd 服务
 create_service() {
     print_info "创建 systemd 服务..."
-
     JAR_FILE=$(ls /opt/sui-master/*.jar | head -1)
     if [ -z "$JAR_FILE" ]; then
         print_error "未找到 JAR 文件"
@@ -315,7 +286,6 @@ create_service() {
     fi
     print_info "使用 JAR 文件: $JAR_FILE"
 
-    # 确保日志目录存在且有正确权限
     mkdir -p /opt/sui-master/logs
     chown -R suimaster:suimaster /opt/sui-master/logs
     chmod 755 /opt/sui-master/logs
@@ -347,12 +317,10 @@ create_service() {
     print_info "systemd 服务创建完成"
 }
 
-# 启动服务
 start_service() {
     print_info "启动 SUI Master 服务..."
     systemctl start sui-master
     sleep 3
-
     if systemctl is-active --quiet sui-master; then
         print_info "SUI Master 服务启动成功"
     else
@@ -361,10 +329,8 @@ start_service() {
     fi
 }
 
-# 创建自定义命令
 create_custom_command() {
     print_info "创建自定义命令 sui-m ..."
-
     cat > /usr/local/bin/sui-m << 'EOF'
 #!/bin/bash
 case "$1" in
@@ -392,12 +358,10 @@ case "$1" in
         ;;
 esac
 EOF
-
     chmod +x /usr/local/bin/sui-m
     print_info "自定义命令创建完成"
 }
 
-# 显示完成信息
 show_complete() {
     echo ""
     echo "=========================================="
@@ -426,7 +390,6 @@ show_complete() {
     echo ""
 }
 
-# 主函数
 main() {
     print_info "开始安装 SUI Master..."
     check_root
