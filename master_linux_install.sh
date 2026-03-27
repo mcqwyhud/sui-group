@@ -225,6 +225,7 @@ setup_user_and_dir() {
 }
 
 # 下载并验证 JAR（参照 External 脚本的下载方式，并增加 SHA256 校验）
+# 下载并验证 JAR（使用 assets API，避免标准 URL 的 404 问题）
 download_and_verify_jar() {
     print_info "下载文件..."
 
@@ -254,7 +255,7 @@ download_and_verify_jar() {
         exit 1
     fi
 
-    # 提取版本号
+    # 提取版本号（仅用于显示）
     LATEST_VERSION=$(echo "$API_RESPONSE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
     if [ -z "$LATEST_VERSION" ]; then
         print_error "无法获取最新版本，请检查令牌和仓库设置"
@@ -263,42 +264,88 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 获取 jar 文件名（从 assets 中提取）
-    JAR_NAME=$(echo "$API_RESPONSE" | grep -o '"name": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
-    if [ -z "$JAR_NAME" ]; then
+    # 解析 assets 数组，提取第一个 .jar 文件的信息
+    # 使用 awk 逐行解析 JSON 的 assets 部分，提取 name、id 和 digest
+    # 为了简化，我们将整个响应按 "assets" 分割，然后逐条处理
+    ASSET_INFO=$(echo "$API_RESPONSE" | awk -v RS='{' -v FS='\n' '
+        /"name":/ {
+            name=""; id=""; digest="";
+            for(i=1;i<=NF;i++) {
+                if($i ~ /"name":/) {
+                    split($i, a, ":");
+                    name=substr(a[2], 2, length(a[2])-3);
+                }
+                if($i ~ /"id":/) {
+                    split($i, a, ":");
+                    id=a[2];
+                    gsub(/[^0-9]/, "", id);
+                }
+                if($i ~ /"digest":/ && $i ~ /sha256/) {
+                    split($i, a, ":");
+                    digest=substr(a[2], 2, length(a[2])-3);
+                }
+            }
+            if(name ~ /\.jar$/ && name != "") {
+                print "NAME=" name "\nID=" id "\nDIGEST=" digest;
+                exit;
+            }
+        }
+    ')
+
+    if [ -z "$ASSET_INFO" ]; then
         print_error "发布版本中未找到 jar 文件"
         print_info "可用的 assets:"
         echo "$API_RESPONSE" | grep -o '"name": "[^"]*"' | cut -d'"' -f4
         exit 1
     fi
+
+    # 提取各项信息
+    JAR_NAME=$(echo "$ASSET_INFO" | grep "^NAME=" | cut -d= -f2)
+    ASSET_ID=$(echo "$ASSET_INFO" | grep "^ID=" | cut -d= -f2)
+    EXPECTED_SHA256=$(echo "$ASSET_INFO" | grep "^DIGEST=" | cut -d= -f2)
+
+    if [ -z "$JAR_NAME" ] || [ -z "$ASSET_ID" ]; then
+        print_error "无法从资产中提取 JAR 名称或 ID"
+        exit 1
+    fi
     print_info "JAR 文件名: $JAR_NAME"
+    print_info "资产 ID: $ASSET_ID"
 
-    # 提取 digest（SHA256）
-    DIGEST=$(echo "$API_RESPONSE" | grep -o '"digest": "sha256:[^"]*"' | head -1 | cut -d'"' -f4)
-    EXPECTED_SHA256=$(echo "$DIGEST" | sed 's/^sha256://')
+    # 构建 assets API 下载 URL
+    ASSETS_DOWNLOAD_URL="https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
 
-    # 构建下载 URL（使用 browser_download_url，与 External 脚本一致）
-    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/$JAR_NAME"
-
-    print_info "下载 JAR 文件..."
+    print_info "通过 assets API 下载 JAR 文件..."
     DOWNLOAD_ERROR=false
     if command -v wget &> /dev/null; then
         wget --header="Authorization: token $GITHUB_TOKEN" \
-             -O "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL" || DOWNLOAD_ERROR=true
+             --header="Accept: application/octet-stream" \
+             -O "/opt/sui-master/$JAR_NAME" "$ASSETS_DOWNLOAD_URL" || DOWNLOAD_ERROR=true
     else
         curl -L -H "Authorization: token $GITHUB_TOKEN" \
-             -o "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL" || DOWNLOAD_ERROR=true
+             -H "Accept: application/octet-stream" \
+             -o "/opt/sui-master/$JAR_NAME" "$ASSETS_DOWNLOAD_URL" || DOWNLOAD_ERROR=true
     fi
 
     if [ "$DOWNLOAD_ERROR" = true ] || [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
-        print_error "文件下载失败"
-        print_info "下载 URL: $DOWNLOAD_URL"
-        print_info "请检查:"
-        print_info "1. GitHub 令牌是否有正确的权限"
-        print_info "2. 仓库是否为私有仓库"
-        print_info "3. Release 版本是否存在"
-        print_info "4. JAR 文件名是否正确"
-        exit 1
+        print_error "assets API 下载失败，尝试使用标准 Release URL..."
+        # 备选：标准 URL（可能成功）
+        STANDARD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/$JAR_NAME"
+        if command -v wget &> /dev/null; then
+            wget --header="Authorization: token $GITHUB_TOKEN" \
+                 -O "/opt/sui-master/$JAR_NAME" "$STANDARD_URL" || DOWNLOAD_ERROR=true
+        else
+            curl -L -H "Authorization: token $GITHUB_TOKEN" \
+                 -o "/opt/sui-master/$JAR_NAME" "$STANDARD_URL" || DOWNLOAD_ERROR=true
+        fi
+        if [ "$DOWNLOAD_ERROR" = true ] || [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
+            print_error "所有下载方式均失败"
+            print_info "请检查:"
+            print_info "1. GitHub 令牌是否有正确的权限 (repo)"
+            print_info "2. 仓库是否为私有仓库"
+            print_info "3. Release 版本是否存在"
+            print_info "4. JAR 文件名是否正确"
+            exit 1
+        fi
     fi
 
     # SHA256 校验
