@@ -246,7 +246,6 @@ download_and_verify_jar() {
     print_info "获取最新版本信息..."
     API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL")
 
-    # 提取版本号
     LATEST_VERSION=$(echo "$API_RESPONSE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
     if [ -z "$LATEST_VERSION" ]; then
         print_error "无法获取最新版本，请检查令牌和仓库设置"
@@ -254,8 +253,9 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 稳健提取 asset ID：先定位到包含 jar 文件名的行，再取前面的 id
-    ASSET_ID=$(echo "$API_RESPONSE" | grep -o '"id": [0-9]*, "name": "sui-master-0.0.1-SNAPSHOT.jar"' | sed 's/.*"id": \([0-9]*\),.*/\1/')
+    # 将整个响应压缩成一行，再提取 asset ID（避免换行干扰）
+    FLAT_RESPONSE=$(echo "$API_RESPONSE" | tr -d '\n')
+    ASSET_ID=$(echo "$FLAT_RESPONSE" | grep -o '"id": [0-9]*, "name": "sui-master-0.0.1-SNAPSHOT.jar"' | sed 's/.*"id": \([0-9]*\),.*/\1/')
     if [ -z "$ASSET_ID" ]; then
         print_error "未找到 jar 文件的 asset ID"
         print_info "API 响应预览（前500字符）:"
@@ -264,8 +264,7 @@ download_and_verify_jar() {
     fi
     print_info "Asset ID: $ASSET_ID"
 
-    # 提取 digest（包含 sha256）
-    DIGEST=$(echo "$API_RESPONSE" | grep -o '"digest": "sha256:[^"]*"' | head -1 | cut -d'"' -f4)
+    DIGEST=$(echo "$FLAT_RESPONSE" | grep -o '"digest": "sha256:[^"]*"' | head -1 | cut -d'"' -f4)
     EXPECTED_SHA256=$(echo "$DIGEST" | sed 's/^sha256://')
     JAR_NAME="sui-master-0.0.1-SNAPSHOT.jar"
 
@@ -287,7 +286,6 @@ download_and_verify_jar() {
         exit 1
     fi
 
-    # SHA256 校验
     if [ -n "$EXPECTED_SHA256" ]; then
         print_info "计算本地 JAR 的 SHA256..."
         LOCAL_SHA256=$(sha256sum "/opt/sui-master/$JAR_NAME" | awk '{print $1}')
