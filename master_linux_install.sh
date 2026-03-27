@@ -246,10 +246,19 @@ download_and_verify_jar() {
     print_info "获取最新版本信息..."
     API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL")
 
+    # 检查 API 响应是否有效
+    if echo "$API_RESPONSE" | grep -q '"message"'; then
+        ERROR_MSG=$(echo "$API_RESPONSE" | grep -o '"message": "[^"]*"' | cut -d'"' -f4)
+        print_error "API 请求失败: $ERROR_MSG"
+        print_info "请检查 GitHub 令牌权限和仓库访问权限"
+        exit 1
+    fi
+
     # 提取版本号
     LATEST_VERSION=$(echo "$API_RESPONSE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
     if [ -z "$LATEST_VERSION" ]; then
         print_error "无法获取最新版本，请检查令牌和仓库设置"
+        print_info "API 响应: $API_RESPONSE"
         exit 1
     fi
     print_info "最新版本: $LATEST_VERSION"
@@ -258,6 +267,8 @@ download_and_verify_jar() {
     JAR_NAME=$(echo "$API_RESPONSE" | grep -o '"name": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
     if [ -z "$JAR_NAME" ]; then
         print_error "发布版本中未找到 jar 文件"
+        print_info "可用的 assets:"
+        echo "$API_RESPONSE" | grep -o '"name": "[^"]*"' | cut -d'"' -f4
         exit 1
     fi
     print_info "JAR 文件名: $JAR_NAME"
@@ -270,16 +281,23 @@ download_and_verify_jar() {
     DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/$JAR_NAME"
 
     print_info "下载 JAR 文件..."
+    DOWNLOAD_ERROR=false
     if command -v wget &> /dev/null; then
         wget --header="Authorization: token $GITHUB_TOKEN" \
-             -O "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
+             -O "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL" || DOWNLOAD_ERROR=true
     else
         curl -L -H "Authorization: token $GITHUB_TOKEN" \
-             -o "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
+             -o "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL" || DOWNLOAD_ERROR=true
     fi
 
-    if [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
+    if [ "$DOWNLOAD_ERROR" = true ] || [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
         print_error "文件下载失败"
+        print_info "下载 URL: $DOWNLOAD_URL"
+        print_info "请检查:"
+        print_info "1. GitHub 令牌是否有正确的权限"
+        print_info "2. 仓库是否为私有仓库"
+        print_info "3. Release 版本是否存在"
+        print_info "4. JAR 文件名是否正确"
         exit 1
     fi
 
