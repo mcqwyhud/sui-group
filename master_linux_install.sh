@@ -459,4 +459,5 @@ main() {
     print_info "安装完成！"
 }
 
+# 执行主函数
 main
