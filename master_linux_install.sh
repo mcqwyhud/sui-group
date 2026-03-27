@@ -49,34 +49,28 @@ detect_os() {
 install_base() {
     print_info "检查基础工具..."
 
-    # 定义需要检查的工具
-    local tools=("wget" "curl" "tar" "tzdata" "jq")
+    local tools=("wget" "curl" "tar" "tzdata")
     local missing_tools=()
 
-    # 检查哪些工具缺失
     for tool in "${tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
-            # tzdata 特殊处理（它不是一个命令，而是一个包）
             if [ "$tool" != "tzdata" ]; then
                 missing_tools+=("$tool")
             fi
         fi
     done
 
-    # 检查 tzdata 是否安装
     if [ ! -d "/usr/share/zoneinfo" ]; then
         missing_tools+=("tzdata")
     fi
 
-    # 如果没有缺失工具，直接返回
     if [ ${#missing_tools[@]} -eq 0 ]; then
-        print_info "基础工具已安装 (wget, curl, tar, tzdata, jq)"
+        print_info "基础工具已安装 (wget, curl, tar, tzdata)"
         return 0
     fi
 
     print_info "需要安装的工具: ${missing_tools[*]}"
 
-    # 检查是否需要更新包缓存（如果超过1天未更新）
     local need_update=false
     case "${OS}" in
         ubuntu|debian)
@@ -107,22 +101,13 @@ install_base() {
     if [ "$need_update" = true ]; then
         print_info "更新软件包缓存..."
         case "${OS}" in
-            ubuntu|debian)
-                apt-get update -qq
-                ;;
-            centos|almalinux|rocky|oracle|rhel)
-                yum makecache -q
-                ;;
-            fedora)
-                dnf makecache -q
-                ;;
-            opensuse-tumbleweed)
-                zypper refresh -q
-                ;;
+            ubuntu|debian) apt-get update -qq ;;
+            centos|almalinux|rocky|oracle|rhel) yum makecache -q ;;
+            fedora) dnf makecache -q ;;
+            opensuse-tumbleweed) zypper refresh -q ;;
         esac
     fi
 
-    # 只安装缺失的工具
     print_info "安装缺失的基础工具..."
     case "${OS}" in
         centos|almalinux|rocky|oracle)
@@ -153,7 +138,6 @@ install_base() {
 install_java() {
     print_info "检查 Java 环境..."
 
-    # 如果已安装 Java 21+，直接返回
     if command -v java &> /dev/null; then
         JAVA_VERSION=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d. -f1)
         if [ "$JAVA_VERSION" -ge 21 ]; then
@@ -181,7 +165,6 @@ install_java() {
             ;;
     esac
 
-    # 验证安装
     if command -v java &> /dev/null; then
         print_info "Java 安装成功: $(java -version 2>&1 | head -1)"
     else
@@ -198,7 +181,6 @@ install_mysql() {
         MYSQL_VERSION=$(mysql --version | awk '{print $5}' | sed 's/,//')
         print_info "已安装 MySQL 版本: $MYSQL_VERSION"
 
-        # 检查数据库是否存在
         if mysql -u root -pc123456 -e "USE \`s-ui\`;" 2>/dev/null; then
             print_info "数据库 's-ui' 已存在"
         else
@@ -238,10 +220,8 @@ install_mysql() {
     esac
     print_info "MySQL 安装完成"
 
-    # 等待MySQL启动
     sleep 5
 
-    # 创建数据库
     print_info "创建数据库..."
     mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || {
         print_warning "无法创建数据库，请手动执行："
@@ -254,36 +234,31 @@ install_mysql() {
 setup_user_and_dir() {
     print_info "创建用户和目录..."
 
-    # 创建用户（如果不存在）
     if ! id -u suimaster &> /dev/null; then
         useradd -r -s /bin/false suimaster
         print_info "用户 suimaster 创建成功"
     fi
 
-    # 创建目录
     mkdir -p /opt/sui-master/{config,logs,uploads,config/web/static}
 
-    # 创建临时目录并设置权限（修复权限问题）
+    # 修复权限问题：创建临时目录并设置权限
     mkdir -p /tmp/JPROTOBUF_CACHE_DIR
     chown -R suimaster:suimaster /tmp/JPROTOBUF_CACHE_DIR
     chmod 755 /tmp/JPROTOBUF_CACHE_DIR
 
-    # 设置权限
     chown -R suimaster:suimaster /opt/sui-master
-
-    # 额外确保日志目录权限正确（修复日志写入问题）
     chmod 755 /opt/sui-master/logs
 
     print_info "目录创建完成"
 }
 
-# 获取最新版本信息
-get_latest_release() {
+# 下载并验证 JAR 文件（含 SHA256 校验）
+download_and_verify_jar() {
+    print_info "下载文件..."
+
     GITHUB_REPO="mcqwyhud/sui-master"
+    RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
-    print_info "获取最新版本信息..."
-
-    # 获取令牌
     if [ -z "$GITHUB_TOKEN" ]; then
         echo ""
         print_info "请输入 GitHub 个人访问令牌（需有 repo 权限）:"
@@ -296,91 +271,72 @@ get_latest_release() {
         exit 1
     fi
 
-    # 获取最新的 release 信息
-    RELEASE_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-        "https://api.github.com/repos/$GITHUB_REPO/releases/latest")
+    print_info "获取最新版本信息..."
+    API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL")
 
-    # 检查是否成功
-    if echo "$RELEASE_INFO" | grep -q "Not Found"; then
-        print_error "无法访问仓库或仓库不存在"
+    LATEST_VERSION=$(echo "$API_RESPONSE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
+    if [ -z "$LATEST_VERSION" ]; then
+        print_error "无法获取最新版本，请检查令牌和仓库设置"
         exit 1
     fi
-
-    # 提取版本号
-    LATEST_VERSION=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
-
-    if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
-        print_error "无法获取最新版本信息"
-        exit 1
-    fi
-
     print_info "最新版本: $LATEST_VERSION"
 
-    # 保存 release 信息
-    echo "$RELEASE_INFO" > /tmp/release_info.json
-}
+    # 获取 jar 文件的 asset 信息
+    ASSET_INFO=$(echo "$API_RESPONSE" | grep -B 20 '"name": "sui-master-0.0.1-SNAPSHOT.jar"' | tail -30)
 
-# 下载并验证 JAR 文件
-download_and_verify() {
-    GITHUB_REPO="mcqwyhud/sui-master"
-    JAR_NAME="sui-master-0.0.1-SNAPSHOT.jar"
+    DOWNLOAD_URL=$(echo "$ASSET_INFO" | grep -o '"browser_download_url": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
+    DIGEST=$(echo "$ASSET_INFO" | grep -o '"digest": "sha256:[^"]*"' | cut -d'"' -f4)
 
-    print_info "下载文件..."
-
-    # 获取 asset ID
-    ASSET_ID=$(cat /tmp/release_info.json | jq -r ".assets[] | select(.name == \"$JAR_NAME\") | .id")
-
-    if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "null" ]; then
-        print_error "无法获取 asset ID"
-        print_info "请检查 /tmp/release_info.json 文件"
+    if [ -z "$DOWNLOAD_URL" ]; then
+        print_error "未找到 jar 文件下载链接"
         exit 1
     fi
 
-    print_info "Asset ID: $ASSET_ID"
+    JAR_NAME=$(basename "$DOWNLOAD_URL")
+    print_info "JAR 文件名: $JAR_NAME"
 
-    # 下载文件
-    print_info "开始下载..."
-    curl -L -H "Authorization: token $GITHUB_TOKEN" \
-         -H "Accept: application/octet-stream" \
-         -o "/opt/sui-master/$JAR_NAME" \
-         "https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
+    # 提取期望的 SHA256 值
+    EXPECTED_SHA256=$(echo "$DIGEST" | sed 's/^sha256://')
+    if [ -n "$EXPECTED_SHA256" ]; then
+        print_info "期望 SHA256: $EXPECTED_SHA256"
+    else
+        print_warning "未获取到 digest 信息，将跳过 SHA256 校验"
+    fi
 
-    # 检查下载是否成功
+    print_info "下载 JAR 文件..."
+    if command -v wget &> /dev/null; then
+        wget --header="Authorization: token $GITHUB_TOKEN" \
+             --header="Accept: application/octet-stream" \
+             -O "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
+    else
+        curl -L -H "Authorization: token $GITHUB_TOKEN" \
+             -H "Accept: application/octet-stream" \
+             -o "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
+    fi
+
     if [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
-        print_error "文件下载失败"
+        print_error "JAR 文件下载失败"
         exit 1
     fi
 
-    # 验证文件大小
-    FILE_SIZE=$(stat -c%s "/opt/sui-master/$JAR_NAME" 2>/dev/null || stat -f%z "/opt/sui-master/$JAR_NAME" 2>/dev/null)
-    if [ "$FILE_SIZE" -lt 1000000 ]; then
-        print_error "文件大小异常: $FILE_SIZE 字节（应该大于 1MB）"
-        print_info "下载可能失败，请检查网络或 token 权限"
-        exit 1
+    # SHA256 校验
+    if [ -n "$EXPECTED_SHA256" ]; then
+        print_info "计算本地 JAR 的 SHA256..."
+        LOCAL_SHA256=$(sha256sum "/opt/sui-master/$JAR_NAME" | awk '{print $1}')
+        if [ "$LOCAL_SHA256" != "$EXPECTED_SHA256" ]; then
+            print_error "SHA256 校验失败！"
+            print_info "期望: $EXPECTED_SHA256"
+            print_info "实际: $LOCAL_SHA256"
+            exit 1
+        fi
+        print_info "SHA256 校验通过 ✓"
+    else
+        print_warning "跳过 SHA256 校验"
     fi
 
-    print_info "文件大小: $(numfmt --to=iec $FILE_SIZE)"
-
-    # 验证 JAR 文件完整性
-    print_info "验证 JAR 文件完整性..."
-    if unzip -t "/opt/sui-master/$JAR_NAME" 2>&1 | grep -q "bad CRC"; then
-        print_error "JAR 文件完整性验证失败 (CRC 错误)"
-        exit 1
-    fi
-
-    # 验证特定文件（ip2region_v4.xdb）
-    if unzip -t "/opt/sui-master/$JAR_NAME" 2>&1 | grep -q "ip2region_v4.xdb.*bad CRC"; then
-        print_error "JAR 文件中的 ip2region_v4.xdb 文件损坏"
-        exit 1
-    fi
-
-    print_info "JAR 文件完整性验证通过"
-
-    # 设置权限
     chown suimaster:suimaster "/opt/sui-master/$JAR_NAME"
     chmod 755 "/opt/sui-master/$JAR_NAME"
-
-    print_info "文件下载完成"
+    print_info "文件准备完成"
 }
 
 # 创建 systemd 服务文件
@@ -394,36 +350,32 @@ create_service() {
     fi
     print_info "使用 JAR 文件: $JAR_FILE"
 
-    # 确保日志目录存在且有正确权限（修复日志写入问题）
+    # 确保日志目录存在且有正确权限
     mkdir -p /opt/sui-master/logs
     chown -R suimaster:suimaster /opt/sui-master/logs
     chmod 755 /opt/sui-master/logs
 
-    # JVM 内存配置（保持原配置）
     JVM_OPTS="-Xms128m -Xmx256m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -XX:MaxDirectMemorySize=64m"
-    # 添加临时目录配置（修复权限问题）
     JVM_OPTS="$JVM_OPTS -Djava.io.tmpdir=/tmp -Djprotobuf.cache.dir=/tmp/JPROTOBUF_CACHE_DIR"
 
     SERVICE_FILE="/etc/systemd/system/sui-master.service"
-    cat > "$SERVICE_FILE" << EOF
-[Unit]
-Description=SUI Master Service
-After=network.target mysql.service
-
-[Service]
-Type=simple
-User=suimaster
-WorkingDirectory=/opt/sui-master
-Environment="JAVA_OPTS=${JVM_OPTS}"
-ExecStart=/usr/bin/java \$JAVA_OPTS -jar ${JAR_FILE}
-Restart=on-failure
-RestartSec=10
-StandardOutput=append:/opt/sui-master/logs/sui-master.log
-StandardError=append:/opt/sui-master/logs/sui-master-error.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
+    > "$SERVICE_FILE"
+    echo "[Unit]" >> "$SERVICE_FILE"
+    echo "Description=SUI Master Service" >> "$SERVICE_FILE"
+    echo "After=network.target mysql.service" >> "$SERVICE_FILE"
+    echo "" >> "$SERVICE_FILE"
+    echo "[Service]" >> "$SERVICE_FILE"
+    echo "Type=simple" >> "$SERVICE_FILE"
+    echo "User=suimaster" >> "$SERVICE_FILE"
+    echo "WorkingDirectory=/opt/sui-master" >> "$SERVICE_FILE"
+    echo "ExecStart=/usr/bin/java ${JVM_OPTS} -jar ${JAR_FILE}" >> "$SERVICE_FILE"
+    echo "Restart=on-failure" >> "$SERVICE_FILE"
+    echo "RestartSec=10" >> "$SERVICE_FILE"
+    echo "StandardOutput=append:/opt/sui-master/logs/sui-master.log" >> "$SERVICE_FILE"
+    echo "StandardError=append:/opt/sui-master/logs/sui-master-error.log" >> "$SERVICE_FILE"
+    echo "" >> "$SERVICE_FILE"
+    echo "[Install]" >> "$SERVICE_FILE"
+    echo "WantedBy=multi-user.target" >> "$SERVICE_FILE"
 
     systemctl daemon-reload
     systemctl enable sui-master
@@ -518,8 +470,7 @@ main() {
     install_java
     install_mysql
     setup_user_and_dir
-    get_latest_release
-    download_and_verify
+    download_and_verify_jar
     create_service
     create_custom_command
     start_service
