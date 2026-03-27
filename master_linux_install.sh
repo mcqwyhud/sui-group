@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # SUI Master 一键安装脚本
-# 参考 External 脚本的下载方式，增加 SHA256 校验
+# 优化下载验证：使用 jq + assets API，确保私有仓库下载稳定性
 
 set -e
 
@@ -36,11 +36,11 @@ detect_os() {
     print_info "检测到操作系统: $OS $VERSION"
 }
 
-# 安装基础工具（wget, curl, tar, tzdata）
+# 安装基础工具（wget, curl, tar, tzdata, jq）
 install_base() {
     print_info "检查基础工具..."
 
-    local tools=("wget" "curl" "tar" "tzdata")
+    local tools=("wget" "curl" "tar" "tzdata" "jq")
     local missing_tools=()
 
     for tool in "${tools[@]}"; do
@@ -56,7 +56,7 @@ install_base() {
     fi
 
     if [ ${#missing_tools[@]} -eq 0 ]; then
-        print_info "基础工具已安装 (wget, curl, tar, tzdata)"
+        print_info "基础工具已安装 (wget, curl, tar, tzdata, jq)"
         return 0
     fi
 
@@ -224,8 +224,7 @@ setup_user_and_dir() {
     print_info "目录创建完成"
 }
 
-# 下载并验证 JAR（参照 External 脚本的下载方式，并增加 SHA256 校验）
-# 下载并验证 JAR（使用 assets API，避免标准 URL 的 404 问题）
+# 下载并验证 JAR（使用 jq + assets API，标准URL作为备用）
 download_and_verify_jar() {
     print_info "下载文件..."
 
@@ -255,8 +254,8 @@ download_and_verify_jar() {
         exit 1
     fi
 
-    # 提取版本号（仅用于显示）
-    LATEST_VERSION=$(echo "$API_RESPONSE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
+    # 使用 jq 提取版本号（仅用于显示）
+    LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name // empty')
     if [ -z "$LATEST_VERSION" ]; then
         print_error "无法获取最新版本，请检查令牌和仓库设置"
         print_info "API 响应: $API_RESPONSE"
@@ -264,45 +263,22 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 解析 assets 数组，提取第一个 .jar 文件的信息
-    # 使用 awk 逐行解析 JSON 的 assets 部分，提取 name、id 和 digest
-    # 为了简化，我们将整个响应按 "assets" 分割，然后逐条处理
-    ASSET_INFO=$(echo "$API_RESPONSE" | awk -v RS='{' -v FS='\n' '
-        /"name":/ {
-            name=""; id=""; digest="";
-            for(i=1;i<=NF;i++) {
-                if($i ~ /"name":/) {
-                    split($i, a, ":");
-                    name=substr(a[2], 2, length(a[2])-3);
-                }
-                if($i ~ /"id":/) {
-                    split($i, a, ":");
-                    id=a[2];
-                    gsub(/[^0-9]/, "", id);
-                }
-                if($i ~ /"digest":/ && $i ~ /sha256/) {
-                    split($i, a, ":");
-                    digest=substr(a[2], 2, length(a[2])-3);
-                }
-            }
-            if(name ~ /\.jar$/ && name != "") {
-                print "NAME=" name "\nID=" id "\nDIGEST=" digest;
-                exit;
-            }
-        }
-    ')
+    # 使用 jq 提取第一个 .jar 资产的信息（name, id, digest）
+    ASSET_INFO=$(echo "$API_RESPONSE" | jq -r '
+        .assets[] | select(.name | endswith(".jar")) |
+        "NAME=\(.name)\nID=\(.id)\nDIGEST=\(.digest // "")"
+    ' | head -n 3)
 
     if [ -z "$ASSET_INFO" ]; then
         print_error "发布版本中未找到 jar 文件"
         print_info "可用的 assets:"
-        echo "$API_RESPONSE" | grep -o '"name": "[^"]*"' | cut -d'"' -f4
+        echo "$API_RESPONSE" | jq -r '.assets[].name' 2>/dev/null || echo "$API_RESPONSE" | grep -o '"name": "[^"]*"' | cut -d'"' -f4
         exit 1
     fi
 
-    # 提取各项信息
-    JAR_NAME=$(echo "$ASSET_INFO" | grep "^NAME=" | cut -d= -f2)
-    ASSET_ID=$(echo "$ASSET_INFO" | grep "^ID=" | cut -d= -f2)
-    EXPECTED_SHA256=$(echo "$ASSET_INFO" | grep "^DIGEST=" | cut -d= -f2)
+    JAR_NAME=$(echo "$ASSET_INFO" | sed -n 's/^NAME=//p')
+    ASSET_ID=$(echo "$ASSET_INFO" | sed -n 's/^ID=//p')
+    EXPECTED_SHA256=$(echo "$ASSET_INFO" | sed -n 's/^DIGEST=//p')
 
     if [ -z "$JAR_NAME" ] || [ -z "$ASSET_ID" ]; then
         print_error "无法从资产中提取 JAR 名称或 ID"
@@ -326,10 +302,11 @@ download_and_verify_jar() {
              -o "/opt/sui-master/$JAR_NAME" "$ASSETS_DOWNLOAD_URL" || DOWNLOAD_ERROR=true
     fi
 
+    # 如果 assets API 下载失败，回退到标准 Release URL
     if [ "$DOWNLOAD_ERROR" = true ] || [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
-        print_error "assets API 下载失败，尝试使用标准 Release URL..."
-        # 备选：标准 URL（可能成功）
+        print_warning "assets API 下载失败，尝试使用标准 Release URL..."
         STANDARD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/$JAR_NAME"
+        DOWNLOAD_ERROR=false
         if command -v wget &> /dev/null; then
             wget --header="Authorization: token $GITHUB_TOKEN" \
                  -O "/opt/sui-master/$JAR_NAME" "$STANDARD_URL" || DOWNLOAD_ERROR=true
