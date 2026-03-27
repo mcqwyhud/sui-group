@@ -263,25 +263,15 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 使用 jq 提取第一个 .jar 资产的信息（name, id, digest）
-    ASSET_INFO=$(echo "$API_RESPONSE" | jq -r '
-        .assets[] | select(.name | endswith(".jar")) |
-        "NAME=\(.name)\nID=\(.id)\nDIGEST=\(.digest // "")"
-    ' | head -n 3)
+    # 提取第一个 .jar 资产的信息（名称、ID、digest，并去除 sha256: 前缀）
+    JAR_NAME=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith(".jar")) | .name' | head -1)
+    ASSET_ID=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith(".jar")) | .id' | head -1)
+    EXPECTED_SHA256=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith(".jar")) | .digest // ""' | head -1 | sed 's/^sha256://')
 
-    if [ -z "$ASSET_INFO" ]; then
+    if [ -z "$JAR_NAME" ] || [ -z "$ASSET_ID" ]; then
         print_error "发布版本中未找到 jar 文件"
         print_info "可用的 assets:"
         echo "$API_RESPONSE" | jq -r '.assets[].name' 2>/dev/null || echo "$API_RESPONSE" | grep -o '"name": "[^"]*"' | cut -d'"' -f4
-        exit 1
-    fi
-
-    JAR_NAME=$(echo "$ASSET_INFO" | sed -n 's/^NAME=//p')
-    ASSET_ID=$(echo "$ASSET_INFO" | sed -n 's/^ID=//p')
-    EXPECTED_SHA256=$(echo "$ASSET_INFO" | sed -n 's/^DIGEST=//p')
-
-    if [ -z "$JAR_NAME" ] || [ -z "$ASSET_ID" ]; then
-        print_error "无法从资产中提取 JAR 名称或 ID"
         exit 1
     fi
     print_info "JAR 文件名: $JAR_NAME"
