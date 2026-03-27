@@ -281,20 +281,20 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 提取 jar 文件的下载链接（兼容不同格式）
-    DOWNLOAD_URL=$(echo "$API_RESPONSE" | grep -o '"browser_download_url": "[^"]*"' | grep -o 'https://[^"]*\.jar' | head -1)
-    # 提取 digest
-    DIGEST=$(echo "$API_RESPONSE" | grep -o '"digest": "sha256:[^"]*"' | head -1 | cut -d'"' -f4)
-
-    if [ -z "$DOWNLOAD_URL" ]; then
-        print_error "未找到 jar 文件下载链接"
+    # 提取 jar 文件的 asset ID
+    ASSET_ID=$(echo "$API_RESPONSE" | grep -o '"id": [0-9]*, "name": "sui-master-0.0.1-SNAPSHOT.jar"' | grep -o '[0-9]*' | head -1)
+    if [ -z "$ASSET_ID" ]; then
+        print_error "未找到 jar 文件的 asset ID"
         exit 1
     fi
+    print_info "Asset ID: $ASSET_ID"
 
-    JAR_NAME=$(basename "$DOWNLOAD_URL")
+    # 提取 digest（包含 sha256）
+    DIGEST=$(echo "$API_RESPONSE" | grep -o '"digest": "sha256:[^"]*"' | head -1 | cut -d'"' -f4)
+
+    JAR_NAME="sui-master-0.0.1-SNAPSHOT.jar"
     print_info "JAR 文件名: $JAR_NAME"
 
-    # 提取期望的 SHA256 值
     EXPECTED_SHA256=$(echo "$DIGEST" | sed 's/^sha256://')
     if [ -n "$EXPECTED_SHA256" ]; then
         print_info "期望 SHA256: $EXPECTED_SHA256"
@@ -303,15 +303,11 @@ download_and_verify_jar() {
     fi
 
     print_info "下载 JAR 文件..."
-    if command -v wget &> /dev/null; then
-        wget --header="Authorization: token $GITHUB_TOKEN" \
-             --header="Accept: application/octet-stream" \
-             -O "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
-    else
-        curl -L -H "Authorization: token $GITHUB_TOKEN" \
-             -H "Accept: application/octet-stream" \
-             -o "/opt/sui-master/$JAR_NAME" "$DOWNLOAD_URL"
-    fi
+    ASSET_API_URL="https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
+    curl -L -H "Authorization: token $GITHUB_TOKEN" \
+         -H "Accept: application/octet-stream" \
+         -o "/opt/sui-master/$JAR_NAME" \
+         "$ASSET_API_URL"
 
     if [ ! -f "/opt/sui-master/$JAR_NAME" ]; then
         print_error "JAR 文件下载失败"
