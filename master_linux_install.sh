@@ -281,11 +281,10 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 获取 jar 文件的 asset 信息
-    ASSET_INFO=$(echo "$API_RESPONSE" | grep -B 20 '"name": "sui-master-0.0.1-SNAPSHOT.jar"' | tail -30)
-
-    DOWNLOAD_URL=$(echo "$ASSET_INFO" | grep -o '"browser_download_url": "[^"]*\.jar"' | cut -d'"' -f4 | head -1)
-    DIGEST=$(echo "$ASSET_INFO" | grep -o '"digest": "sha256:[^"]*"' | cut -d'"' -f4)
+    # 提取 jar 文件的下载链接（兼容不同格式）
+    DOWNLOAD_URL=$(echo "$API_RESPONSE" | grep -o '"browser_download_url": "[^"]*"' | grep -o 'https://[^"]*\.jar' | head -1)
+    # 提取 digest
+    DIGEST=$(echo "$API_RESPONSE" | grep -o '"digest": "sha256:[^"]*"' | head -1 | cut -d'"' -f4)
 
     if [ -z "$DOWNLOAD_URL" ]; then
         print_error "未找到 jar 文件下载链接"
