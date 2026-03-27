@@ -254,10 +254,12 @@ download_and_verify_jar() {
     fi
     print_info "最新版本: $LATEST_VERSION"
 
-    # 提取 jar 文件的 asset ID（通过匹配 name）
-    ASSET_ID=$(echo "$API_RESPONSE" | grep -o '"id": [0-9]*, "name": "sui-master-0.0.1-SNAPSHOT.jar"' | grep -o '[0-9]*' | head -1)
+    # 稳健提取 asset ID：先定位到包含 jar 文件名的行，再取前面的 id
+    ASSET_ID=$(echo "$API_RESPONSE" | grep -o '"id": [0-9]*, "name": "sui-master-0.0.1-SNAPSHOT.jar"' | sed 's/.*"id": \([0-9]*\),.*/\1/')
     if [ -z "$ASSET_ID" ]; then
         print_error "未找到 jar 文件的 asset ID"
+        print_info "API 响应预览（前500字符）:"
+        echo "$API_RESPONSE" | head -c 500
         exit 1
     fi
     print_info "Asset ID: $ASSET_ID"
