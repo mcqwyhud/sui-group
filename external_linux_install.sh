@@ -206,7 +206,15 @@ setup_user_and_dir() {
 
     # 创建所需目录
     mkdir -p /opt/sui-external/{config,logs,uploads,config/web/static}
+
+    # 修复权限问题：创建临时目录
+    mkdir -p /tmp/JPROTOBUF_CACHE_DIR
+    chown -R suiexternal:suiexternal /tmp/JPROTOBUF_CACHE_DIR
+    chmod 755 /tmp/JPROTOBUF_CACHE_DIR
+
     chown -R suiexternal:suiexternal /opt/sui-external
+    chmod 755 /opt/sui-external/logs
+
     print_info "目录创建完成"
 }
 
@@ -343,6 +351,7 @@ create_service() {
 
     # JVM 内存配置（可根据需要调整）
     JVM_OPTS="-Xms64m -Xmx128m -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -XX:MaxDirectMemorySize=32m"
+    JVM_OPTS="$JVM_OPTS -Djava.io.tmpdir=/tmp -Djprotobuf.cache.dir=/tmp/JPROTOBUF_CACHE_DIR"
 
     SERVICE_FILE="/etc/systemd/system/sui-external.service"
     > "$SERVICE_FILE"
