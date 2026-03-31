@@ -213,13 +213,14 @@ setup_user_and_dir() {
 
     mkdir -p /opt/sui-master/{config,logs,uploads,config/web/static}
 
-    # 修复权限问题：创建临时目录
-    mkdir -p /tmp/JPROTOBUF_CACHE_DIR
-    chown -R suimaster:suimaster /tmp/JPROTOBUF_CACHE_DIR
-    chmod 755 /tmp/JPROTOBUF_CACHE_DIR
+    # 创建持久化的 jprotobuf 缓存目录
+    mkdir -p /opt/sui-master/jprotobuf-cache
+    mkdir -p /opt/sui-master/tmp
 
     chown -R suimaster:suimaster /opt/sui-master
     chmod 755 /opt/sui-master/logs
+    chmod 755 /opt/sui-master/jprotobuf-cache
+    chmod 755 /opt/sui-master/tmp
 
     print_info "目录创建完成"
 }
@@ -347,11 +348,16 @@ create_service() {
 
     # 确保日志目录存在且有正确权限
     mkdir -p /opt/sui-master/logs
-    chown -R suimaster:suimaster /opt/sui-master/logs
-    chmod 755 /opt/sui-master/logs
+    mkdir -p /opt/sui-master/jprotobuf-cache
+    mkdir -p /opt/sui-master/tmp
+    chown -R suimaster:suimaster /opt/sui-master/logs /opt/sui-master/jprotobuf-cache /opt/sui-master/tmp
+    chmod 755 /opt/sui-master/logs /opt/sui-master/jprotobuf-cache /opt/sui-master/tmp
 
+    # JVM 参数 - 使用持久化目录
     JVM_OPTS="-Xms128m -Xmx256m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -XX:MaxDirectMemorySize=64m"
-    JVM_OPTS="$JVM_OPTS -Djava.io.tmpdir=/tmp -Djprotobuf.cache.dir=/tmp/JPROTOBUF_CACHE_DIR"
+    JVM_OPTS="$JVM_OPTS -Djava.io.tmpdir=/opt/sui-master/tmp"
+    JVM_OPTS="$JVM_OPTS -Djprotobuf.cache.dir=/opt/sui-master/jprotobuf-cache"
+    JVM_OPTS="$JVM_OPTS -Djprotobuf.cache.enable=true"
 
     SERVICE_FILE="/etc/systemd/system/sui-master.service"
     > "$SERVICE_FILE"
@@ -368,6 +374,11 @@ create_service() {
     echo "RestartSec=10" >> "$SERVICE_FILE"
     echo "StandardOutput=file:/opt/sui-master/logs/sui-master.log" >> "$SERVICE_FILE"
     echo "StandardError=file:/opt/sui-master/logs/sui-master-error.log" >> "$SERVICE_FILE"
+
+    # 添加环境变量
+    echo "Environment=JPROTOBUF_CACHE_DIR=/opt/sui-master/jprotobuf-cache" >> "$SERVICE_FILE"
+    echo "Environment=JAVA_OPTS=${JVM_OPTS}" >> "$SERVICE_FILE"
+
     echo "" >> "$SERVICE_FILE"
     echo "[Install]" >> "$SERVICE_FILE"
     echo "WantedBy=multi-user.target" >> "$SERVICE_FILE"
@@ -375,6 +386,25 @@ create_service() {
     systemctl daemon-reload
     systemctl enable sui-master
     print_info "systemd 服务创建完成"
+}
+
+# 清理旧的缓存
+cleanup_caches() {
+    print_info "清理旧的缓存..."
+
+    # 清理旧的 /tmp 缓存
+    if [ -d "/tmp/JPROTOBUF_CACHE_DIR" ]; then
+        print_info "删除旧的 /tmp 缓存..."
+        rm -rf /tmp/JPROTOBUF_CACHE_DIR
+    fi
+
+    # 确保新目录存在且权限正确
+    mkdir -p /opt/sui-master/jprotobuf-cache
+    mkdir -p /opt/sui-master/tmp
+    chown -R suimaster:suimaster /opt/sui-master/jprotobuf-cache /opt/sui-master/tmp
+    chmod 755 /opt/sui-master/jprotobuf-cache /opt/sui-master/tmp
+
+    print_info "缓存清理完成"
 }
 
 # 启动服务
@@ -468,6 +498,7 @@ main() {
     download_and_verify_jar
     create_service
     create_custom_command
+    cleanup_caches  # 清理旧的temp缓存
     start_service
     show_complete
     print_info "安装完成！"

@@ -207,13 +207,21 @@ setup_user_and_dir() {
     # 创建所需目录
     mkdir -p /opt/sui-external/{config,logs,uploads,config/web/static}
 
-    # 修复权限问题：创建临时目录
-    mkdir -p /tmp/JPROTOBUF_CACHE_DIR
-    chown -R suiexternal:suiexternal /tmp/JPROTOBUF_CACHE_DIR
-    chmod 755 /tmp/JPROTOBUF_CACHE_DIR
+    # 创建持久化的 jprotobuf 缓存目录（重要！避免 /tmp 权限问题）
+    mkdir -p /opt/sui-external/jprotobuf-cache
+    mkdir -p /opt/sui-external/tmp
 
+    # 设置权限
     chown -R suiexternal:suiexternal /opt/sui-external
     chmod 755 /opt/sui-external/logs
+    chmod 755 /opt/sui-external/jprotobuf-cache
+    chmod 755 /opt/sui-external/tmp
+
+    # 清理旧的 /tmp 缓存（可选）
+    if [ -d "/tmp/JPROTOBUF_CACHE_DIR" ]; then
+        print_info "清理旧的 /tmp 缓存..."
+        rm -rf /tmp/JPROTOBUF_CACHE_DIR
+    fi
 
     print_info "目录创建完成"
 }
@@ -349,9 +357,17 @@ create_service() {
     fi
     print_info "使用 JAR 文件: $JAR_FILE"
 
-    # JVM 内存配置（可根据需要调整）
+    # 确保缓存目录存在（再次确认）
+    mkdir -p /opt/sui-external/jprotobuf-cache
+    mkdir -p /opt/sui-external/tmp
+    chown -R suiexternal:suiexternal /opt/sui-external/jprotobuf-cache /opt/sui-external/tmp
+    chmod 755 /opt/sui-external/jprotobuf-cache /opt/sui-external/tmp
+
+    # JVM 内存配置 - 使用持久化目录
     JVM_OPTS="-Xms64m -Xmx128m -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -XX:MaxDirectMemorySize=32m"
-    JVM_OPTS="$JVM_OPTS -Djava.io.tmpdir=/tmp -Djprotobuf.cache.dir=/tmp/JPROTOBUF_CACHE_DIR"
+    JVM_OPTS="$JVM_OPTS -Djava.io.tmpdir=/opt/sui-external/tmp"
+    JVM_OPTS="$JVM_OPTS -Djprotobuf.cache.dir=/opt/sui-external/jprotobuf-cache"
+    JVM_OPTS="$JVM_OPTS -Djprotobuf.cache.enable=true"
 
     SERVICE_FILE="/etc/systemd/system/sui-external.service"
     > "$SERVICE_FILE"
@@ -368,6 +384,11 @@ create_service() {
     echo "RestartSec=10" >> "$SERVICE_FILE"
     echo "StandardOutput=file:/opt/sui-external/logs/sui-external.log" >> "$SERVICE_FILE"
     echo "StandardError=file:/opt/sui-external/logs/sui-external-error.log" >> "$SERVICE_FILE"
+
+    # 添加环境变量
+    echo "Environment=JPROTOBUF_CACHE_DIR=/opt/sui-external/jprotobuf-cache" >> "$SERVICE_FILE"
+    echo "Environment=JAVA_OPTS=${JVM_OPTS}" >> "$SERVICE_FILE"
+
     echo "" >> "$SERVICE_FILE"
     echo "[Install]" >> "$SERVICE_FILE"
     echo "WantedBy=multi-user.target" >> "$SERVICE_FILE"
@@ -375,6 +396,25 @@ create_service() {
     systemctl daemon-reload
     systemctl enable sui-external
     print_info "systemd 服务创建完成"
+}
+
+# 清理旧的缓存
+cleanup_caches() {
+    print_info "清理旧的缓存..."
+
+    # 清理旧的 /tmp 缓存
+    if [ -d "/tmp/JPROTOBUF_CACHE_DIR" ]; then
+        print_info "删除旧的 /tmp 缓存..."
+        rm -rf /tmp/JPROTOBUF_CACHE_DIR
+    fi
+
+    # 确保新目录存在且权限正确
+    mkdir -p /opt/sui-external/jprotobuf-cache
+    mkdir -p /opt/sui-external/tmp
+    chown -R suiexternal:suiexternal /opt/sui-external/jprotobuf-cache /opt/sui-external/tmp
+    chmod 755 /opt/sui-external/jprotobuf-cache /opt/sui-external/tmp
+
+    print_info "缓存清理完成"
 }
 
 # 启动服务
@@ -458,6 +498,7 @@ main() {
     download_jar
     create_service
     create_custom_command
+    cleanup_caches  # 清理旧的temp缓存
     start_service
     show_complete
     print_info "安装完成！"
