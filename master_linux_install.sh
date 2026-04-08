@@ -158,20 +158,17 @@ install_mysql() {
         MYSQL_MAJOR=$(echo "$MYSQL_VERSION" | cut -d. -f1)
         print_info "已安装 MySQL 版本: $MYSQL_VERSION"
 
-        # 版本已满足要求，直接创建数据库后返回
         if [ "$MYSQL_MAJOR" -ge 8 ]; then
             print_info "MySQL 版本符合要求 (≥8.0)"
             mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null
             return 0
         fi
 
-        # ----- 2. 版本过低，执行自动升级 -----
         print_info "MySQL 版本 $MYSQL_VERSION < 8.0，开始自动升级..."
 
-        # 检测当前 MySQL root 密码
         MYSQL_PASS="c123456"
         if ! mysql -u root -p"$MYSQL_PASS" -e "SELECT 1" &>/dev/null; then
-            print_warning "默认密码 'c123456' 无效，请手动输入当前 MySQL root 密码："
+            print_warning "默认密码无效，请输入当前 MySQL root 密码："
             read -sp "MySQL root 密码: " MYSQL_PASS
             echo
             if ! mysql -u root -p"$MYSQL_PASS" -e "SELECT 1" &>/dev/null; then
@@ -183,101 +180,80 @@ install_mysql() {
         BACKUP_DIR="/opt/mysql-backup-$(date +%Y%m%d_%H%M%S)"
         mkdir -p "$BACKUP_DIR"
 
-        # 逻辑备份所有数据库
         print_info "正在备份所有数据库到 $BACKUP_DIR/all-databases.sql"
         if mysqldump -u root -p"$MYSQL_PASS" --all-databases --single-transaction --routines --triggers > "$BACKUP_DIR/all-databases.sql" 2>/dev/null; then
-            print_info "数据库逻辑备份完成 (路径: $BACKUP_DIR/all-databases.sql)"
+            print_info "数据库逻辑备份完成"
         else
             print_error "数据库备份失败，升级已终止"
             exit 1
         fi
 
-        # 停止 MySQL 服务
         systemctl stop mysql 2>/dev/null || systemctl stop mysqld 2>/dev/null || service mysql stop 2>/dev/null
         sleep 2
 
-        # 卸载旧版本（询问用户确认）
         print_warning "即将卸载旧版 MySQL，数据已备份至 $BACKUP_DIR"
-        read -p "是否继续卸载并安装 MySQL 8.0？(y/N) " -n 1 -r
+        read -p "是否继续？(y/N) " -n 1 -r
         echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_error "升级已取消"
-            exit 1
-        fi
+        [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
 
         case "${OS}" in
             ubuntu|debian)
                 echo "mysql-server mysql-server/postrm_remove_databases boolean false" | debconf-set-selections
-                echo "mysql-server-8.0 mysql-server/postrm_remove_databases boolean false" | debconf-set-selections 2>/dev/null
-                echo "mysql-server-5.7 mysql-server/postrm_remove_databases boolean false" | debconf-set-selections 2>/dev/null
                 apt-get remove --purge -y mysql-server mysql-client mysql-common mysql-server-* mysql-client-* 2>/dev/null
                 apt-get autoremove -y
                 ;;
             centos|almalinux|rocky|oracle|rhel|fedora)
-                yum remove -y mysql-server mysql mysql-community-server mysql-community-client 2>/dev/null || \
-                dnf remove -y mysql-server mysql mysql-community-server mysql-community-client 2>/dev/null
+                yum remove -y mysql-server mysql 2>/dev/null || dnf remove -y mysql-server mysql 2>/dev/null
                 rm -f /etc/yum.repos.d/mysql-community*.repo
                 ;;
         esac
         print_info "旧版 MySQL 已卸载"
 
-        # 物理备份原数据目录（用于极端情况回滚）
-        if [ -d "/var/lib/mysql" ]; then
-            mv /var/lib/mysql "$BACKUP_DIR/mysql-data"
-            print_info "原始数据目录已备份至 $BACKUP_DIR/mysql-data"
-        fi
-
+        [ -d "/var/lib/mysql" ] && mv /var/lib/mysql "$BACKUP_DIR/mysql-data"
     else
         print_info "未检测到 MySQL，将全新安装 MySQL 8.0"
-        MYSQL_PASS="c123456"   # 全新安装统一使用此密码
+        MYSQL_PASS="c123456"
     fi
 
     # ----- 3. 安装 MySQL 8.0 -----
     print_info "正在安装 MySQL 8.0..."
     case "${OS}" in
         ubuntu|debian)
-            # 添加官方 APT 仓库
             wget -q https://dev.mysql.com/get/mysql-apt-config_0.8.24-1_all.deb -O /tmp/mysql-apt-config.deb
             echo "mysql-apt-config mysql-apt-config/select-server select mysql-8.0" | debconf-set-selections
             echo "mysql-apt-config mysql-apt-config/select-product select Ok" | debconf-set-selections
             export DEBIAN_FRONTEND=noninteractive
             dpkg -i /tmp/mysql-apt-config.deb
 
-            # 导入 MySQL 官方 GPG 公钥（从官方下载公钥文件，避免硬编码 Key ID）
             print_info "导入 MySQL 官方 GPG 公钥..."
             wget -q -O /tmp/mysql_pubkey.asc https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
             apt-key add /tmp/mysql_pubkey.asc 2>/dev/null || true
 
-            # 仅禁用已知有 GPG 问题的 openjdk-r PPA（避免干扰 apt update）
             print_info "检查并处理可能引发 GPG 错误的软件源..."
             OPENJDK_PPA_DISABLED=false
             if ls /etc/apt/sources.list.d/openjdk-r-ubuntu-ppa-*.list 1>/dev/null 2>&1; then
                 mkdir -p /tmp/apt_sources_backup
-                for ppa in /etc/apt/sources.list.d/openjdk-r-ubuntu-ppa-*.list; do
-                    mv "$ppa" /tmp/apt_sources_backup/ 2>/dev/null || true
-                done
+                mv /etc/apt/sources.list.d/openjdk-r-ubuntu-ppa-*.list /tmp/apt_sources_backup/ 2>/dev/null || true
                 OPENJDK_PPA_DISABLED=true
             fi
 
             print_info "更新软件包列表..."
             apt-get update -qq || apt-get update --allow-unauthenticated -qq || true
 
-            # 预配置 MySQL root 密码并安装
             echo "mysql-community-server mysql-community-server/root-pass password $MYSQL_PASS" | debconf-set-selections
             echo "mysql-community-server mysql-community-server/re-root-pass password $MYSQL_PASS" | debconf-set-selections
             apt-get install -y mysql-server
 
-            # 恢复被禁用的 openjdk-r PPA
             if [ "$OPENJDK_PPA_DISABLED" = true ]; then
                 print_info "恢复 openjdk-r 软件源..."
                 mv /tmp/apt_sources_backup/*.list /etc/apt/sources.list.d/ 2>/dev/null || true
                 rm -rf /tmp/apt_sources_backup
-                apt-get update -qq || true
+                # 静默更新，不输出 GPG 错误干扰用户
+                apt-get update -qq 2>/dev/null || true
             fi
             ;;
 
         centos|almalinux|rocky|oracle|rhel|fedora)
-            # 添加官方 YUM 仓库
             rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el7-3.noarch.rpm 2>/dev/null || \
             rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el8-1.noarch.rpm 2>/dev/null || \
             rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm 2>/dev/null
@@ -285,30 +261,22 @@ install_mysql() {
             yum-config-manager --enable mysql80-community 2>/dev/null
             yum install -y mysql-server 2>/dev/null || dnf install -y mysql-server
             ;;
-
         *)
-            print_error "不支持的操作系统: $OS，请手动安装 MySQL 8.0"
+            print_error "不支持的操作系统: $OS"
             exit 1
             ;;
     esac
 
-    # 启动服务
-    systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null
-    systemctl enable mysqld 2>/dev/null || systemctl enable mysql 2>/dev/null
+    systemctl start mysql 2>/dev/null || systemctl start mysqld 2>/dev/null
+    systemctl enable mysql 2>/dev/null || systemctl enable mysqld 2>/dev/null
     sleep 5
 
-    # 处理 CentOS 系列首次启动生成的临时密码
     if [[ "$OS" =~ ^(centos|almalinux|rocky|oracle|rhel|fedora)$ ]]; then
         TEMP_PASS=$(grep 'temporary password' /var/log/mysqld.log 2>/dev/null | tail -1 | awk '{print $NF}')
-        if [ -n "$TEMP_PASS" ]; then
-            mysql --connect-expired-password -u root -p"$TEMP_PASS" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PASS';" 2>/dev/null
-        fi
+        [ -n "$TEMP_PASS" ] && mysql --connect-expired-password -u root -p"$TEMP_PASS" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PASS';" 2>/dev/null
     fi
-
-    # 确保 root 密码已正确设置
     mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PASS';" 2>/dev/null
 
-    # 简单安全配置
     mysql -u root -p"$MYSQL_PASS" <<EOF 2>/dev/null
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
@@ -319,22 +287,12 @@ EOF
 
     print_info "MySQL 8.0 安装完成"
 
-    # ----- 4. 恢复数据（如果有备份）-----
     if [ -f "$BACKUP_DIR/all-databases.sql" ]; then
         print_info "正在恢复数据..."
-        if mysql -u root -p"$MYSQL_PASS" < "$BACKUP_DIR/all-databases.sql" 2>/dev/null; then
-            print_info "数据恢复成功"
-        else
-            print_error "数据恢复失败，请手动从 $BACKUP_DIR/all-databases.sql 导入"
-        fi
+        mysql -u root -p"$MYSQL_PASS" < "$BACKUP_DIR/all-databases.sql" 2>/dev/null || print_error "数据恢复失败，请手动处理"
     fi
 
-    # 创建项目数据库
-    mysql -u root -p"$MYSQL_PASS" -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || {
-        print_warning "无法自动创建数据库，请手动执行："
-        echo "  mysql -u root -p -e \"CREATE DATABASE \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\""
-    }
-
+    mysql -u root -p"$MYSQL_PASS" -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null
     print_info "MySQL 处理完成！"
 }
 
