@@ -194,6 +194,11 @@ install_mysql() {
 
         case "${OS}" in
             ubuntu|debian)
+                # 阻止卸载时询问是否删除数据目录
+                echo "mysql-server mysql-server/postrm_remove_databases boolean false" | debconf-set-selections
+                echo "mysql-server-8.0 mysql-server/postrm_remove_databases boolean false" | debconf-set-selections 2>/dev/null
+                echo "mysql-server-5.7 mysql-server/postrm_remove_databases boolean false" | debconf-set-selections 2>/dev/null
+
                 apt-get remove --purge -y mysql-server mysql-client mysql-common mysql-server-* mysql-client-* 2>/dev/null
                 apt-get autoremove -y
                 ;;
