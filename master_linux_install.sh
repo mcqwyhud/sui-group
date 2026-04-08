@@ -224,15 +224,17 @@ install_mysql() {
     print_info "正在安装 MySQL 8.0..."
     case "${OS}" in
         ubuntu|debian)
-            # 添加官方 APT 仓库
+            # 添加官方 APT 仓库（完全无人值守）
             wget -q https://dev.mysql.com/get/mysql-apt-config_0.8.24-1_all.deb -O /tmp/mysql-apt-config.deb
             echo "mysql-apt-config mysql-apt-config/select-server select mysql-8.0" | debconf-set-selections
+            echo "mysql-apt-config mysql-apt-config/select-product select Ok" | debconf-set-selections
+            export DEBIAN_FRONTEND=noninteractive
             dpkg -i /tmp/mysql-apt-config.deb
             apt-get update -qq
-            # 预配置密码
+
+            # 预配置 MySQL root 密码
             echo "mysql-community-server mysql-community-server/root-pass password c123456" | debconf-set-selections
             echo "mysql-community-server mysql-community-server/re-root-pass password c123456" | debconf-set-selections
-            export DEBIAN_FRONTEND=noninteractive
             apt-get install -y mysql-server
             ;;
         centos|almalinux|rocky|oracle|rhel|fedora)
@@ -265,7 +267,7 @@ install_mysql() {
         fi
     fi
 
-    # 设置 root 密码（以防未设置）
+    # 确保 root 密码已正确设置
     mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'c123456';" 2>/dev/null
 
     # 简单安全配置
