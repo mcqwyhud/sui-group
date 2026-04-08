@@ -328,6 +328,29 @@ EOF
     print_info "MySQL 处理完成！"
 }
 
+# 创建用户和目录
+setup_user_and_dir() {
+    print_info "创建用户和目录..."
+
+    if ! id -u suimaster &> /dev/null; then
+        useradd -r -s /bin/false suimaster
+        print_info "用户 suimaster 创建成功"
+    fi
+
+    mkdir -p /opt/sui-master/{config,logs,uploads,config/web/static}
+
+    # 创建持久化的 jprotobuf 缓存目录
+    mkdir -p /opt/sui-master/jprotobuf-cache
+    mkdir -p /opt/sui-master/tmp
+
+    chown -R suimaster:suimaster /opt/sui-master
+    chmod 755 /opt/sui-master/logs
+    chmod 755 /opt/sui-master/jprotobuf-cache
+    chmod 755 /opt/sui-master/tmp
+
+    print_info "目录创建完成"
+}
+
 # 下载并验证 JAR（使用 jq + assets API，标准URL作为备用）
 download_and_verify_jar() {
     print_info "下载文件..."
