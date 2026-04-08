@@ -194,11 +194,9 @@ install_mysql() {
 
         case "${OS}" in
             ubuntu|debian)
-                # 阻止卸载时询问是否删除数据目录
                 echo "mysql-server mysql-server/postrm_remove_databases boolean false" | debconf-set-selections
                 echo "mysql-server-8.0 mysql-server/postrm_remove_databases boolean false" | debconf-set-selections 2>/dev/null
                 echo "mysql-server-5.7 mysql-server/postrm_remove_databases boolean false" | debconf-set-selections 2>/dev/null
-
                 apt-get remove --purge -y mysql-server mysql-client mysql-common mysql-server-* mysql-client-* 2>/dev/null
                 apt-get autoremove -y
                 ;;
@@ -210,7 +208,6 @@ install_mysql() {
         esac
         print_info "旧版 MySQL 已卸载"
 
-        # 物理备份原数据目录（用于极端情况回滚）
         if [ -d "/var/lib/mysql" ]; then
             mv /var/lib/mysql "$BACKUP_DIR/mysql-data"
             print_info "原始数据目录已备份至 $BACKUP_DIR/mysql-data"
@@ -224,28 +221,31 @@ install_mysql() {
     print_info "正在安装 MySQL 8.0..."
     case "${OS}" in
         ubuntu|debian)
-            # 添加官方 APT 仓库（完全无人值守）
             wget -q https://dev.mysql.com/get/mysql-apt-config_0.8.24-1_all.deb -O /tmp/mysql-apt-config.deb
             echo "mysql-apt-config mysql-apt-config/select-server select mysql-8.0" | debconf-set-selections
             echo "mysql-apt-config mysql-apt-config/select-product select Ok" | debconf-set-selections
             export DEBIAN_FRONTEND=noninteractive
             dpkg -i /tmp/mysql-apt-config.deb
+
+            # 手动导入 MySQL 官方 GPG 公钥（解决 Ubuntu 18.04 签名验证失败问题）
+            print_info "导入 MySQL GPG 公钥..."
+            apt-key adv --keyserver keyserver.ubuntu.com --recv-keys B7B3B788A8D3785C 2>/dev/null || {
+                wget -q -O /tmp/mysql_pubkey.asc https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
+                apt-key add /tmp/mysql_pubkey.asc 2>/dev/null
+            }
+
             apt-get update -qq
 
-            # 预配置 MySQL root 密码
             echo "mysql-community-server mysql-community-server/root-pass password c123456" | debconf-set-selections
             echo "mysql-community-server mysql-community-server/re-root-pass password c123456" | debconf-set-selections
             apt-get install -y mysql-server
             ;;
         centos|almalinux|rocky|oracle|rhel|fedora)
-            # 添加官方 YUM 仓库
             rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el7-3.noarch.rpm 2>/dev/null || \
             rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el8-1.noarch.rpm 2>/dev/null || \
             rpm -Uvh https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm 2>/dev/null
-            # 启用 8.0 仓库，禁用 5.7
             yum-config-manager --disable mysql57-community 2>/dev/null
             yum-config-manager --enable mysql80-community 2>/dev/null
-            # 安装
             yum install -y mysql-server 2>/dev/null || dnf install -y mysql-server
             ;;
         *)
@@ -254,12 +254,10 @@ install_mysql() {
             ;;
     esac
 
-    # 启动服务
     systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null
     systemctl enable mysqld 2>/dev/null || systemctl enable mysql 2>/dev/null
     sleep 5
 
-    # 处理 CentOS 系列首次启动生成的临时密码
     if [[ "$OS" =~ ^(centos|almalinux|rocky|oracle|rhel|fedora)$ ]]; then
         TEMP_PASS=$(grep 'temporary password' /var/log/mysqld.log 2>/dev/null | tail -1 | awk '{print $NF}')
         if [ -n "$TEMP_PASS" ]; then
@@ -267,10 +265,8 @@ install_mysql() {
         fi
     fi
 
-    # 确保 root 密码已正确设置
     mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'c123456';" 2>/dev/null
 
-    # 简单安全配置
     mysql -u root -pc123456 -e "DELETE FROM mysql.user WHERE User='';" 2>/dev/null
     mysql -u root -pc123456 -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');" 2>/dev/null
     mysql -u root -pc123456 -e "DROP DATABASE IF EXISTS test;" 2>/dev/null
@@ -279,7 +275,6 @@ install_mysql() {
 
     print_info "MySQL 8.0 安装完成"
 
-    # ----- 4. 恢复数据（如果有备份）-----
     if [ -f "$BACKUP_DIR/all-databases.sql" ]; then
         print_info "正在恢复数据..."
         if mysql -u root -pc123456 < "$BACKUP_DIR/all-databases.sql" 2>/dev/null; then
@@ -289,7 +284,6 @@ install_mysql() {
         fi
     fi
 
-    # 创建项目数据库
     mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || {
         print_warning "无法自动创建数据库，请手动执行："
         echo "  mysql -u root -p -e \"CREATE DATABASE \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\""
