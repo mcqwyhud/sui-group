@@ -154,21 +154,29 @@ install_mysql() {
 
     # ----- 1. 如果 MySQL 已安装 -----
     if command -v mysql &> /dev/null; then
-        MYSQL_VERSION=$(mysql --version | awk '{print $5}' | sed 's/,//')
+        # 健壮提取版本号：尝试多种方式确保拿到数字版本
+        MYSQL_VERSION=$(mysql --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
+        [ -z "$MYSQL_VERSION" ] && MYSQL_VERSION=$(mysql --version 2>/dev/null | sed -n 's/.* \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' | head -1)
+        [ -z "$MYSQL_VERSION" ] && MYSQL_VERSION=$(mysql -V 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i~/^[0-9]+\.[0-9]+\.[0-9]+/){print $i;exit}}')
         MYSQL_MAJOR=$(echo "$MYSQL_VERSION" | cut -d. -f1)
         print_info "已安装 MySQL 版本: $MYSQL_VERSION"
 
-        if [ "$MYSQL_MAJOR" -ge 8 ]; then
+        # 版本已满足要求
+        if [ -n "$MYSQL_MAJOR" ] && [ "$MYSQL_MAJOR" -ge 8 ]; then
             print_info "MySQL 版本符合要求 (≥8.0)"
-            mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null
+            systemctl start mysql 2>/dev/null || systemctl start mysqld 2>/dev/null || service mysql start 2>/dev/null || true
+            sleep 2
+            mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || true
             return 0
         fi
 
+        # 版本过低，开始升级流程
         print_info "MySQL 版本 $MYSQL_VERSION < 8.0，开始自动升级..."
 
+        # 密码检测与交互
         MYSQL_PASS="c123456"
         if ! mysql -u root -p"$MYSQL_PASS" -e "SELECT 1" &>/dev/null; then
-            print_warning "默认密码无效，请输入当前 MySQL root 密码："
+            print_warning "默认密码 'c123456' 无效，请输入当前 MySQL root 密码："
             read -sp "MySQL root 密码: " MYSQL_PASS
             echo
             if ! mysql -u root -p"$MYSQL_PASS" -e "SELECT 1" &>/dev/null; then
@@ -181,12 +189,11 @@ install_mysql() {
         mkdir -p "$BACKUP_DIR"
 
         print_info "正在备份所有数据库到 $BACKUP_DIR/all-databases.sql"
-        if mysqldump -u root -p"$MYSQL_PASS" --all-databases --single-transaction --routines --triggers > "$BACKUP_DIR/all-databases.sql" 2>/dev/null; then
-            print_info "数据库逻辑备份完成"
-        else
+        if ! mysqldump -u root -p"$MYSQL_PASS" --all-databases --single-transaction --routines --triggers > "$BACKUP_DIR/all-databases.sql" 2>/dev/null; then
             print_error "数据库备份失败，升级已终止"
             exit 1
         fi
+        print_info "数据库逻辑备份完成"
 
         systemctl stop mysql 2>/dev/null || systemctl stop mysqld 2>/dev/null || service mysql stop 2>/dev/null
         sleep 2
@@ -194,8 +201,12 @@ install_mysql() {
         print_warning "即将卸载旧版 MySQL，数据已备份至 $BACKUP_DIR"
         read -p "是否继续？(y/N) " -n 1 -r
         echo
-        [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_error "升级已取消"
+            exit 1
+        fi
 
+        # 卸载旧版本
         case "${OS}" in
             ubuntu|debian)
                 echo "mysql-server mysql-server/postrm_remove_databases boolean false" | debconf-set-selections
@@ -203,19 +214,25 @@ install_mysql() {
                 apt-get autoremove -y
                 ;;
             centos|almalinux|rocky|oracle|rhel|fedora)
-                yum remove -y mysql-server mysql 2>/dev/null || dnf remove -y mysql-server mysql 2>/dev/null
+                yum remove -y mysql-server mysql mysql-community-server mysql-community-client 2>/dev/null || \
+                dnf remove -y mysql-server mysql mysql-community-server mysql-community-client 2>/dev/null
                 rm -f /etc/yum.repos.d/mysql-community*.repo
                 ;;
         esac
         print_info "旧版 MySQL 已卸载"
 
-        [ -d "/var/lib/mysql" ] && mv /var/lib/mysql "$BACKUP_DIR/mysql-data"
+        # 物理备份原数据目录
+        if [ -d "/var/lib/mysql" ]; then
+            mv /var/lib/mysql "$BACKUP_DIR/mysql-data"
+            print_info "原始数据目录已备份"
+        fi
+
     else
         print_info "未检测到 MySQL，将全新安装 MySQL 8.0"
         MYSQL_PASS="c123456"
     fi
 
-    # ----- 3. 安装 MySQL 8.0 -----
+    # ----- 2. 安装 MySQL 8.0 -----
     print_info "正在安装 MySQL 8.0..."
     case "${OS}" in
         ubuntu|debian)
@@ -229,7 +246,7 @@ install_mysql() {
             wget -q -O /tmp/mysql_pubkey.asc https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
             apt-key add /tmp/mysql_pubkey.asc 2>/dev/null || true
 
-            print_info "检查并处理可能引发 GPG 错误的软件源..."
+            # 临时禁用已知有 GPG 问题的 openjdk-r PPA
             OPENJDK_PPA_DISABLED=false
             if ls /etc/apt/sources.list.d/openjdk-r-ubuntu-ppa-*.list 1>/dev/null 2>&1; then
                 mkdir -p /tmp/apt_sources_backup
@@ -244,11 +261,10 @@ install_mysql() {
             echo "mysql-community-server mysql-community-server/re-root-pass password $MYSQL_PASS" | debconf-set-selections
             apt-get install -y mysql-server
 
+            # 恢复 PPA
             if [ "$OPENJDK_PPA_DISABLED" = true ]; then
-                print_info "恢复 openjdk-r 软件源..."
                 mv /tmp/apt_sources_backup/*.list /etc/apt/sources.list.d/ 2>/dev/null || true
                 rm -rf /tmp/apt_sources_backup
-                # 静默更新，不输出 GPG 错误干扰用户
                 apt-get update -qq 2>/dev/null || true
             fi
             ;;
@@ -261,22 +277,28 @@ install_mysql() {
             yum-config-manager --enable mysql80-community 2>/dev/null
             yum install -y mysql-server 2>/dev/null || dnf install -y mysql-server
             ;;
+
         *)
-            print_error "不支持的操作系统: $OS"
+            print_error "不支持的操作系统: $OS，请手动安装 MySQL 8.0"
             exit 1
             ;;
     esac
 
-    systemctl start mysql 2>/dev/null || systemctl start mysqld 2>/dev/null
+    # 启动服务
+    systemctl start mysql 2>/dev/null || systemctl start mysqld 2>/dev/null || service mysql start 2>/dev/null
     systemctl enable mysql 2>/dev/null || systemctl enable mysqld 2>/dev/null
     sleep 5
 
+    # 处理 CentOS 临时密码
     if [[ "$OS" =~ ^(centos|almalinux|rocky|oracle|rhel|fedora)$ ]]; then
         TEMP_PASS=$(grep 'temporary password' /var/log/mysqld.log 2>/dev/null | tail -1 | awk '{print $NF}')
         [ -n "$TEMP_PASS" ] && mysql --connect-expired-password -u root -p"$TEMP_PASS" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PASS';" 2>/dev/null
     fi
-    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PASS';" 2>/dev/null
 
+    # 确保 root 密码正确
+    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PASS';" 2>/dev/null || true
+
+    # 安全配置
     mysql -u root -p"$MYSQL_PASS" <<EOF 2>/dev/null
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
@@ -287,36 +309,23 @@ EOF
 
     print_info "MySQL 8.0 安装完成"
 
+    # ----- 3. 恢复数据（如果有备份）-----
     if [ -f "$BACKUP_DIR/all-databases.sql" ]; then
         print_info "正在恢复数据..."
-        mysql -u root -p"$MYSQL_PASS" < "$BACKUP_DIR/all-databases.sql" 2>/dev/null || print_error "数据恢复失败，请手动处理"
+        if mysql -u root -p"$MYSQL_PASS" < "$BACKUP_DIR/all-databases.sql" 2>/dev/null; then
+            print_info "数据恢复成功"
+        else
+            print_error "数据恢复失败，请手动从 $BACKUP_DIR/all-databases.sql 导入"
+        fi
     fi
 
-    mysql -u root -p"$MYSQL_PASS" -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null
+    # 创建项目数据库
+    mysql -u root -p"$MYSQL_PASS" -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || {
+        print_warning "无法自动创建数据库，请手动执行："
+        echo "  mysql -u root -p -e \"CREATE DATABASE \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\""
+    }
+
     print_info "MySQL 处理完成！"
-}
-
-# 创建用户和目录
-setup_user_and_dir() {
-    print_info "创建用户和目录..."
-
-    if ! id -u suimaster &> /dev/null; then
-        useradd -r -s /bin/false suimaster
-        print_info "用户 suimaster 创建成功"
-    fi
-
-    mkdir -p /opt/sui-master/{config,logs,uploads,config/web/static}
-
-    # 创建持久化的 jprotobuf 缓存目录
-    mkdir -p /opt/sui-master/jprotobuf-cache
-    mkdir -p /opt/sui-master/tmp
-
-    chown -R suimaster:suimaster /opt/sui-master
-    chmod 755 /opt/sui-master/logs
-    chmod 755 /opt/sui-master/jprotobuf-cache
-    chmod 755 /opt/sui-master/tmp
-
-    print_info "目录创建完成"
 }
 
 # 下载并验证 JAR（使用 jq + assets API，标准URL作为备用）
