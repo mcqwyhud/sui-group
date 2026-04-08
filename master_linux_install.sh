@@ -152,25 +152,21 @@ install_java() {
 install_mysql() {
     print_info "检查 MySQL 环境..."
 
-    # ----- 1. 如果 MySQL 已安装 -----
     if command -v mysql &> /dev/null; then
         MYSQL_VERSION=$(mysql --version | awk '{print $5}' | sed 's/,//')
         MYSQL_MAJOR=$(echo "$MYSQL_VERSION" | cut -d. -f1)
         print_info "已安装 MySQL 版本: $MYSQL_VERSION"
 
-        # 版本已满足要求，直接创建数据库后返回
         if [ "$MYSQL_MAJOR" -ge 8 ]; then
             print_info "MySQL 版本符合要求 (≥8.0)"
             mysql -u root -pc123456 -e "CREATE DATABASE IF NOT EXISTS \`s-ui\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null
             return 0
         fi
 
-        # ----- 2. 版本过低，执行自动升级 -----
         print_info "MySQL 版本 $MYSQL_VERSION < 8.0，开始自动升级..."
         BACKUP_DIR="/opt/mysql-backup-$(date +%Y%m%d_%H%M%S)"
         mkdir -p "$BACKUP_DIR"
 
-        # 逻辑备份所有数据库
         print_info "正在备份所有数据库到 $BACKUP_DIR/all-databases.sql"
         if mysqldump -u root -pc123456 --all-databases --single-transaction --routines --triggers > "$BACKUP_DIR/all-databases.sql" 2>/dev/null; then
             print_info "数据库逻辑备份完成 (路径: $BACKUP_DIR/all-databases.sql)"
@@ -179,11 +175,9 @@ install_mysql() {
             exit 1
         fi
 
-        # 停止 MySQL 服务
         systemctl stop mysql 2>/dev/null || systemctl stop mysqld 2>/dev/null || service mysql stop 2>/dev/null
         sleep 2
 
-        # 卸载旧版本（询问用户确认）
         print_warning "即将卸载旧版 MySQL，数据已备份至 $BACKUP_DIR"
         read -p "是否继续卸载并安装 MySQL 8.0？(y/N) " -n 1 -r
         echo
@@ -217,7 +211,6 @@ install_mysql() {
         print_info "未检测到 MySQL，将全新安装 MySQL 8.0"
     fi
 
-    # ----- 3. 安装 MySQL 8.0 -----
     print_info "正在安装 MySQL 8.0..."
     case "${OS}" in
         ubuntu|debian)
@@ -227,14 +220,25 @@ install_mysql() {
             export DEBIAN_FRONTEND=noninteractive
             dpkg -i /tmp/mysql-apt-config.deb
 
-            # 手动导入 MySQL 官方 GPG 公钥（解决 Ubuntu 18.04 签名验证失败问题）
             print_info "导入 MySQL GPG 公钥..."
             apt-key adv --keyserver keyserver.ubuntu.com --recv-keys B7B3B788A8D3785C 2>/dev/null || {
                 wget -q -O /tmp/mysql_pubkey.asc https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
                 apt-key add /tmp/mysql_pubkey.asc 2>/dev/null
             }
 
-            apt-get update -qq
+            print_info "检查并修复系统 GPG 密钥..."
+            if grep -rq "openjdk-r" /etc/apt/sources.list.d/ 2>/dev/null; then
+                apt-key adv --keyserver keyserver.ubuntu.com --recv-keys EB9B1D8886F44E2A 08B3810CB7017B89 2>/dev/null || {
+                    print_warning "无法导入 openjdk-r PPA 公钥，将临时禁用该 PPA"
+                    sed -i 's/^deb /#deb /' /etc/apt/sources.list.d/openjdk-r-ubuntu-ppa-*.list 2>/dev/null
+                }
+            fi
+
+            print_info "更新软件包列表..."
+            apt-get update -qq || {
+                print_warning "apt-get update 遇到错误，尝试强制继续..."
+                apt-get update --allow-unauthenticated -qq || true
+            }
 
             echo "mysql-community-server mysql-community-server/root-pass password c123456" | debconf-set-selections
             echo "mysql-community-server mysql-community-server/re-root-pass password c123456" | debconf-set-selections
