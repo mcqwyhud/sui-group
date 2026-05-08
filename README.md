@@ -22,3 +22,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/mcqwyhud/sui-group/main/extern
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/mcqwyhud/sui-group/main/master_linux_install_v1.0.sh)
 ```
+
+### 下载到指定目录 
+```bash
+sudo wget -O /opt/sui-external/config/static/portal/android_arm64.apk https://github.com/mcqwyhud/sui-group/releases/download/v1.0.0/android_arm64.apk
+```
