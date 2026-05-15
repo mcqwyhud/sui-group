@@ -28,6 +28,13 @@ bash <(curl -Ls https://raw.githubusercontent.com/mcqwyhud/sui-group/main/master
 sudo wget -O /opt/sui-external/config/static/portal/android_arm64.apk https://github.com/mcqwyhud/sui-group/releases/download/v1.0.0/android_arm64.apk
 ```
 
+### 备份MySql一键安装
+
+```bash
+# 一行命令安装（全程交互式，Token 输入时不显示）
+read -rsp "请输入 GitHub Token: " TOKEN && echo && bash <(curl -fsSL -H "Authorization: token $TOKEN"   -H "Accept: application/vnd.github.v3.raw"   "https://api.github.com/repos/mcqwyhud/sui-master/contents/db-backup/install.sh?ref=main")
+```
+
 ### 安装nginx,默认80端口
 服务器文件存放目录/opt/download
 下载地址：
