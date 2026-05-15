@@ -32,7 +32,7 @@ sudo wget -O /opt/sui-external/config/static/portal/android_arm64.apk https://gi
 
 ```bash
 # 一行命令安装（全程交互式，Token 输入时不显示）
-read -rsp "请输入 GitHub Token: " TOKEN && echo && bash <(curl -fsSL -H "Authorization: token $TOKEN"   -H "Accept: application/vnd.github.v3.raw"   "https://api.github.com/repos/mcqwyhud/sui-master/contents/db-backup/install.sh?ref=main")
+read -rsp "请输入 GitHub Token: " TOKEN && echo && bash <(curl -fsSL -H "Authorization: token $TOKEN"   -H "Accept: application/vnd.github.v3.raw"   "https://api.github.com/repos/mcqwyhud/sui-master/contents/db-backup/install.sh?ref=master")
 ```
 
 ### 安装nginx,默认80端口
