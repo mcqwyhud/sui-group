@@ -52,6 +52,12 @@ http://ip/文件全名
 ```bash
 sudo apt update && sudo apt install nginx -y && sudo mkdir -p /opt/download && echo 'server { listen 80; server_name _; root /opt/download; location / { autoindex on; autoindex_exact_size off; autoindex_localtime on; if ($request_filename ~* ^.*?\.(apk|zip)$) { add_header Content-Disposition "attachment;"; } } }' | sudo tee /etc/nginx/sites-available/default && sudo systemctl restart nginx && echo -e "\n\033[32m【配置成功】Nginx 已就绪！下载目录已更改为: /opt/download\033[0m\n"
 ```
+
+#### 改时区
+```bash
+sudo timedatectl set-timezone Asia/Shanghai
+```
+
 #### 限速版安装
 ```bash
 sudo tee /etc/nginx/nginx.conf << 'EOF'
