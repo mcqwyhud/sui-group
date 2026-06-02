@@ -30,6 +30,9 @@ sudo wget -O /opt/sui-external/config/static/portal/android_arm64.apk https://gi
 ```bash
 sudo wget -O /opt/download/android_arm64.apk https://github.com/mcqwyhud/sui-group/releases/download/v1.0.0/android_arm64.apk
 ```
+```bash
+sudo wget -O /opt/download/win10.zip https://github.com/mcqwyhud/sui-group/releases/download/v1.0.0/win10.zip
+```
 
 ### 备份MySql一键安装
 
