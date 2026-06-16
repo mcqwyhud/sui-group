@@ -190,7 +190,7 @@ uuid_gen() {
 }
 
 # =========================
-# JSON 配置（agent.json）
+# JSON 配置（agent.json）- 修复：如果存在则跳过交互
 # =========================
 setup_json_config() {
     print_info "初始化 JSON 配置..."
@@ -198,13 +198,56 @@ setup_json_config() {
 
     local CONFIG_FILE="/opt/sui-agent/config/agent.json"
     
+    # ==========================================
+    # 如果配置文件已存在，直接加载并跳过交互
+    # ==========================================
+    if [ -f "$CONFIG_FILE" ]; then
+        print_info "检测到已有配置文件: $CONFIG_FILE"
+        
+        # 验证配置文件是否完整
+        if command -v jq &>/dev/null; then
+            if jq -e '.brokerKey and .brokerHost and .brokerPort and .suiApi2Key' "$CONFIG_FILE" >/dev/null 2>&1; then
+                print_info "✅ 配置文件完整，跳过交互式配置"
+                
+                # 显示当前配置摘要
+                local brokerKey=$(jq -r '.brokerKey' "$CONFIG_FILE" 2>/dev/null)
+                local brokerHost=$(jq -r '.brokerHost' "$CONFIG_FILE" 2>/dev/null)
+                local brokerPort=$(jq -r '.brokerPort' "$CONFIG_FILE" 2>/dev/null)
+                local agentName=$(jq -r '.agentName' "$CONFIG_FILE" 2>/dev/null)
+                
+                echo ""
+                print_info "当前配置摘要:"
+                echo "  brokerHost: $brokerHost"
+                echo "  brokerPort: $brokerPort"
+                echo "  agentName:  $agentName"
+                echo "  brokerKey:  ${brokerKey:0:16}..."
+                echo ""
+                
+                return 0
+            else
+                print_warning "配置文件不完整，将重新配置"
+                # 备份损坏的配置
+                mv "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%s)"
+            fi
+        else
+            print_warning "jq 未安装，无法验证配置文件"
+            print_info "跳过交互，使用已有配置"
+            return 0
+        fi
+    fi
+    
+    # ==========================================
+    # 如果配置文件不存在，进入交互式配置
+    # ==========================================
+    print_info "未检测到配置文件，开始交互式配置..."
+    
     # 定义默认值
     local brokerKey_def="TuAyStnLhnVX9l215cgciVWFDhs2CrrehFZTEgJVtrM="
-    local brokerHost_def="127.0.0.1"
+    local brokerHost_def="localhost"
     local brokerPort_def="10200"
-    local suiSubUrl_def="http://127.0.0.1:2096/sub/"
+    local suiSubUrl_def="http://localhost:2096/sub/"
     local suiApi2Key_def="cwCZa6Aq6lmKXjt3QeotgywhiDzXpb8U"
-    local suiApi2Url_def="http://127.0.0.1:2095"
+    local suiApi2Url_def="http://localhost:2095"
     local suiApi2Path_def="/app/apiv2"
     local agentName_def="子节点逻辑服1"
     local agentTag_def="子节点逻辑服"
@@ -214,115 +257,55 @@ setup_json_config() {
     local auto_up_mbps_def="0"
     local auto_down_mbps_def="0"
 
-    # 初始化变量
-    local brokerKey="$brokerKey_def"
-    local brokerHost="$brokerHost_def"
-    local brokerPort="$brokerPort_def"
-    local suiSubUrl="$suiSubUrl_def"
-    local suiApi2Key="$suiApi2Key_def"
-    local suiApi2Url="$suiApi2Url_def"
-    local suiApi2Path="$suiApi2Path_def"
-    local agentName="$agentName_def"
-    local agentTag="$agentTag_def"
-    local reportVpsTime="$reportVpsTime_def"
-    local auto_create_inbound="$auto_create_inbound_def"
-    local auto_vpsId="$auto_vpsId_def"
-    local auto_up_mbps="$auto_up_mbps_def"
-    local auto_down_mbps="$auto_down_mbps_def"
-    local pid=""
-
-    # 如果存在配置文件则读取
-    if [ -f "$CONFIG_FILE" ]; then
-        print_info "检测到已有配置文件: $CONFIG_FILE"
-        if command -v jq &>/dev/null; then
-            # 读取配置，如果字段不存在则使用默认值
-            local tmp_brokerKey=$(jq -r '.brokerKey // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_brokerHost=$(jq -r '.brokerHost // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_brokerPort=$(jq -r '.brokerPort // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_suiSubUrl=$(jq -r '.suiSubUrl // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_suiApi2Key=$(jq -r '.suiApi2Key // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_suiApi2Url=$(jq -r '.suiApi2Url // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_suiApi2Path=$(jq -r '.suiApi2Path // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_agentName=$(jq -r '.agentName // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_agentTag=$(jq -r '.agentTag // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_reportVpsTime=$(jq -r '.reportVpsTime // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_auto_create_inbound=$(jq -r '.auto_create_inbound // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_auto_vpsId=$(jq -r '.auto_vpsId // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_auto_up_mbps=$(jq -r '.auto_up_mbps // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_auto_down_mbps=$(jq -r '.auto_down_mbps // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-            local tmp_pid=$(jq -r '.pid // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-
-            [ -n "$tmp_brokerKey" ] && brokerKey="$tmp_brokerKey"
-            [ -n "$tmp_brokerHost" ] && brokerHost="$tmp_brokerHost"
-            [ -n "$tmp_brokerPort" ] && brokerPort="$tmp_brokerPort"
-            [ -n "$tmp_suiSubUrl" ] && suiSubUrl="$tmp_suiSubUrl"
-            [ -n "$tmp_suiApi2Key" ] && suiApi2Key="$tmp_suiApi2Key"
-            [ -n "$tmp_suiApi2Url" ] && suiApi2Url="$tmp_suiApi2Url"
-            [ -n "$tmp_suiApi2Path" ] && suiApi2Path="$tmp_suiApi2Path"
-            [ -n "$tmp_agentName" ] && agentName="$tmp_agentName"
-            [ -n "$tmp_agentTag" ] && agentTag="$tmp_agentTag"
-            [ -n "$tmp_reportVpsTime" ] && reportVpsTime="$tmp_reportVpsTime"
-            [ -n "$tmp_auto_create_inbound" ] && auto_create_inbound="$tmp_auto_create_inbound"
-            [ -n "$tmp_auto_vpsId" ] && auto_vpsId="$tmp_auto_vpsId"
-            [ -n "$tmp_auto_up_mbps" ] && auto_up_mbps="$tmp_auto_up_mbps"
-            [ -n "$tmp_auto_down_mbps" ] && auto_down_mbps="$tmp_auto_down_mbps"
-            [ -n "$tmp_pid" ] && pid="$tmp_pid"
-        else
-            print_warning "jq 未安装，使用默认值"
-        fi
-    fi
-
     # 生成 PID
-    if [ -z "$pid" ]; then
-        pid=$(uuid_gen)
-    fi
+    local pid=$(uuid_gen)
 
     echo ""
     print_info "开始交互式配置（直接回车使用默认值）"
     echo ""
 
     # 交互式输入
-    read -p "brokerKey [$brokerKey]: " input
-    brokerKey="${input:-$brokerKey}"
+    read -p "brokerKey [$brokerKey_def]: " input
+    local brokerKey="${input:-$brokerKey_def}"
     
-    read -p "brokerHost [$brokerHost]: " input
-    brokerHost="${input:-$brokerHost}"
+    read -p "brokerHost [$brokerHost_def]: " input
+    local brokerHost="${input:-$brokerHost_def}"
     
-    read -p "brokerPort [$brokerPort]: " input
-    brokerPort="${input:-$brokerPort}"
+    read -p "brokerPort [$brokerPort_def]: " input
+    local brokerPort="${input:-$brokerPort_def}"
     
-    read -p "suiSubUrl [$suiSubUrl]: " input
-    suiSubUrl="${input:-$suiSubUrl}"
+    read -p "suiSubUrl [$suiSubUrl_def]: " input
+    local suiSubUrl="${input:-$suiSubUrl_def}"
     
-    read -p "suiApi2Key [$suiApi2Key]: " input
-    suiApi2Key="${input:-$suiApi2Key}"
+    read -p "suiApi2Key [$suiApi2Key_def]: " input
+    local suiApi2Key="${input:-$suiApi2Key_def}"
     
-    read -p "suiApi2Url [$suiApi2Url]: " input
-    suiApi2Url="${input:-$suiApi2Url}"
+    read -p "suiApi2Url [$suiApi2Url_def]: " input
+    local suiApi2Url="${input:-$suiApi2Url_def}"
     
-    read -p "suiApi2Path [$suiApi2Path]: " input
-    suiApi2Path="${input:-$suiApi2Path}"
+    read -p "suiApi2Path [$suiApi2Path_def]: " input
+    local suiApi2Path="${input:-$suiApi2Path_def}"
     
-    read -p "agentName [$agentName]: " input
-    agentName="${input:-$agentName}"
+    read -p "agentName [$agentName_def]: " input
+    local agentName="${input:-$agentName_def}"
     
-    read -p "agentTag [$agentTag]: " input
-    agentTag="${input:-$agentTag}"
+    read -p "agentTag [$agentTag_def]: " input
+    local agentTag="${input:-$agentTag_def}"
     
-    read -p "reportVpsTime [$reportVpsTime]: " input
-    reportVpsTime="${input:-$reportVpsTime}"
+    read -p "reportVpsTime [$reportVpsTime_def]: " input
+    local reportVpsTime="${input:-$reportVpsTime_def}"
     
-    read -p "auto_create_inbound [$auto_create_inbound]: " input
-    auto_create_inbound="${input:-$auto_create_inbound}"
+    read -p "auto_create_inbound [$auto_create_inbound_def]: " input
+    local auto_create_inbound="${input:-$auto_create_inbound_def}"
     
-    read -p "auto_vpsId [$auto_vpsId]: " input
-    auto_vpsId="${input:-$auto_vpsId}"
+    read -p "auto_vpsId [$auto_vpsId_def]: " input
+    local auto_vpsId="${input:-$auto_vpsId_def}"
     
-    read -p "auto_up_mbps [$auto_up_mbps]: " input
-    auto_up_mbps="${input:-$auto_up_mbps}"
+    read -p "auto_up_mbps [$auto_up_mbps_def]: " input
+    local auto_up_mbps="${input:-$auto_up_mbps_def}"
     
-    read -p "auto_down_mbps [$auto_down_mbps]: " input
-    auto_down_mbps="${input:-$auto_down_mbps}"
+    read -p "auto_down_mbps [$auto_down_mbps_def]: " input
+    local auto_down_mbps="${input:-$auto_down_mbps_def}"
 
     # 写入配置文件
     cat > "$CONFIG_FILE" <<EOF
@@ -345,10 +328,21 @@ setup_json_config() {
 }
 EOF
 
-    chown suiagent:suiagent "$CONFIG_FILE"
+    chown suiagent:suiagent "$CONFIG_FILE" 2>/dev/null || true
     chmod 644 "$CONFIG_FILE"
     
-    print_info "JSON 配置已保存到: $CONFIG_FILE"
+    print_info "✅ JSON 配置已保存到: $CONFIG_FILE"
+}
+
+# =========================
+# UUID 生成函数
+# =========================
+uuid_gen() {
+    if command -v uuidgen &>/dev/null; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    else
+        cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "uuid-$(date +%s)"
+    fi
 }
 
 # =========================
