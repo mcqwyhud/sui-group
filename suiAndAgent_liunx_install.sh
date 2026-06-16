@@ -28,6 +28,54 @@ detect_os() {
 }
 
 # ------------------------------
+# 生成 Java 风格 UUID（标准格式带横线）
+# ------------------------------
+gen_uuid() {
+    if command -v uuidgen &>/dev/null; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    else
+        # 手动生成标准 UUID 格式
+        local uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+        if [ -n "$uuid" ]; then
+            echo "$uuid"
+        else
+            # 备用方案：生成随机 UUID
+            printf "%08x-%04x-%04x-%04x-%012x\n" \
+                $((RANDOM*65536 + RANDOM)) \
+                $((RANDOM*65536 + RANDOM)) \
+                $(( (RANDOM*65536 + RANDOM) & 0x0FFF | 0x4000 )) \
+                $(( (RANDOM*65536 + RANDOM) & 0x3FFF | 0x8000 )) \
+                $((RANDOM*65536*65536 + RANDOM*65536 + RANDOM))
+        fi
+    fi
+}
+
+# ------------------------------
+# 生成随机字符串
+# ------------------------------
+gen_random() {
+    local len=${1:-32}
+    head -c "$len" /dev/urandom | base64 | tr -d "=+/" | head -c "$len"
+}
+
+# ------------------------------
+# 交互式输入函数
+# ------------------------------
+ask() {
+    local prompt="$1"
+    local default="$2"
+    local input=""
+    
+    if [ -n "$default" ]; then
+        read -p "$prompt [$default]: " input
+        echo "${input:-$default}"
+    else
+        read -p "$prompt: " input
+        echo "$input"
+    fi
+}
+
+# ------------------------------
 # 1. 基础依赖
 # ------------------------------
 install_base() {
@@ -38,10 +86,10 @@ install_base() {
     case "$OS" in
         ubuntu|debian)
             apt update -y
-            apt install -y curl wget jq sqlite3
+            apt install -y curl wget jq sqlite3 uuid-runtime
             ;;
         centos|rhel|almalinux|rocky|fedora)
-            yum install -y curl wget jq sqlite
+            yum install -y curl wget jq sqlite util-linux
             ;;
         *)
             warn "未知系统，尝试使用 yum 安装"
@@ -55,7 +103,134 @@ install_base() {
 }
 
 # ------------------------------
-# 2. 安装 s-ui（官方）
+# 2. 交互式配置 Agent（在 s-ui 安装前）
+# ------------------------------
+pre_configure_agent() {
+    log "开始交互式配置 Agent..."
+    
+    # 创建 Agent 目录
+    mkdir -p /opt/sui-agent/{config,logs,data,conf}
+    
+    # 创建 suiagent 用户（如果不存在）
+    if ! id -u suiagent &>/dev/null; then
+        useradd -r -s /bin/false suiagent
+        log "用户 suiagent 创建成功"
+    fi
+    
+    echo ""
+    log "请输入 Agent 配置信息（直接回车使用默认值）"
+    echo "=========================================="
+    
+    # ==========================================
+    # 生成 PID (Java 风格 UUID)
+    # ==========================================
+    PID=$(gen_uuid)
+    log "自动生成 PID: $PID"
+    
+    # ==========================================
+    # 1. 生成 suiApi2Key - 用于调用 s-ui API
+    # ==========================================
+    SUI_API_KEY=$(gen_random 32)
+    
+    # ==========================================
+    # 2. 生成 brokerKey - 用于 agent 之间通信
+    # ==========================================
+    BROKER_KEY=$(gen_random 32)
+    
+    # 保存两个 key 供后续使用
+    echo "$SUI_API_KEY" > /tmp/sui_api_key
+    echo "$BROKER_KEY" > /tmp/broker_key
+    chmod 600 /tmp/sui_api_key /tmp/broker_key
+    
+    log "生成 suiApi2Key: ${SUI_API_KEY:0:16}..."
+    log "生成 brokerKey: ${BROKER_KEY:0:16}..."
+    echo ""
+    
+    # ==========================================
+    # 3. 交互式配置所有参数
+    # ==========================================
+    
+    # broker 配置
+    BROKER_HOST=$(ask "brokerHost (agent 监听地址)" "localhost")
+    BROKER_PORT=$(ask "brokerPort (agent 监听端口)" "10200")
+    
+    # s-ui 配置
+    SUI_SUB_URL=$(ask "suiSubUrl (s-ui 订阅地址)" "http://localhost:2096/sub/")
+    SUI_API2_URL=$(ask "suiApi2Url (s-ui API 地址)" "http://localhost:2095")
+    SUI_API2_PATH=$(ask "suiApi2Path (s-ui API 路径)" "/app/apiv2")
+    
+    # Agent 信息
+    AGENT_NAME=$(ask "agentName (节点名称)" "子节点逻辑服1")
+    AGENT_TAG=$(ask "agentTag (节点标签)" "子节点逻辑服")
+    REPORT_VPS_TIME=$(ask "reportVpsTime (上报间隔，毫秒)" "600000")
+    
+    # 自动创建入站配置
+    AUTO_CREATE_INBOUND=$(ask "auto_create_inbound (自动创建入站 true/false)" "false")
+    AUTO_VPS_ID=$(ask "auto_vpsId (VPS ID)" "美国1")
+    AUTO_UP_MBPS=$(ask "auto_up_mbps (上行限速 Mbps，0 不限)" "0")
+    AUTO_DOWN_MBPS=$(ask "auto_down_mbps (下行限速 Mbps，0 不限)" "0")
+    
+    echo ""
+    log "配置信息确认:"
+    echo "=========================================="
+    echo "  PID:                    $PID"
+    echo "  brokerKey:              ${BROKER_KEY:0:16}..."
+    echo "  brokerHost:             $BROKER_HOST"
+    echo "  brokerPort:             $BROKER_PORT"
+    echo "  suiApi2Key:             ${SUI_API_KEY:0:16}..."
+    echo "  suiSubUrl:              $SUI_SUB_URL"
+    echo "  suiApi2Url:             $SUI_API2_URL"
+    echo "  suiApi2Path:            $SUI_API2_PATH"
+    echo "  agentName:              $AGENT_NAME"
+    echo "  agentTag:               $AGENT_TAG"
+    echo "  reportVpsTime:          $REPORT_VPS_TIME"
+    echo "  auto_create_inbound:    $AUTO_CREATE_INBOUND"
+    echo "  auto_vpsId:             $AUTO_VPS_ID"
+    echo "  auto_up_mbps:           $AUTO_UP_MBPS"
+    echo "  auto_down_mbps:         $AUTO_DOWN_MBPS"
+    echo "=========================================="
+    
+    local confirm=$(ask "确认以上配置？(y/n)" "y")
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        log "请重新运行脚本配置"
+        exit 0
+    fi
+
+    # 创建 agent.json 配置文件
+    local CONFIG_FILE="/opt/sui-agent/config/agent.json"
+    
+    cat > "$CONFIG_FILE" <<EOF
+{
+  "brokerKey": "$BROKER_KEY",
+  "brokerHost": "$BROKER_HOST",
+  "brokerPort": $BROKER_PORT,
+  "pid": "$PID",
+  "agentName": "$AGENT_NAME",
+  "agentTag": "$AGENT_TAG",
+  "reportVpsTime": $REPORT_VPS_TIME,
+  "suiSubUrl": "$SUI_SUB_URL",
+  "suiApi2Key": "$SUI_API_KEY",
+  "suiApi2Url": "$SUI_API2_URL",
+  "suiApi2Path": "$SUI_API2_PATH",
+  "auto_create_inbound": $AUTO_CREATE_INBOUND,
+  "auto_vpsId": "$AUTO_VPS_ID",
+  "auto_up_mbps": $AUTO_UP_MBPS,
+  "auto_down_mbps": $AUTO_DOWN_MBPS
+}
+EOF
+
+    chown -R suiagent:suiagent /opt/sui-agent
+    chmod 644 "$CONFIG_FILE"
+    
+    log "✅ Agent 配置文件已创建: $CONFIG_FILE"
+    echo ""
+    log "📌 两个 Key 的作用:"
+    log "  - suiApi2Key: 用于 agent 调用 s-ui API (将写入 s-ui 数据库)"
+    log "  - brokerKey:  用于 agent 集群内部通信 (仅 agent 使用)"
+}
+
+# ------------------------------
+# 3. 安装 s-ui（官方）
 # ------------------------------
 install_sui() {
     log "安装 s-ui..."
@@ -71,183 +246,52 @@ install_sui() {
         err "s-ui 安装失败"
     fi
 
-    sleep 5
-
-    # 启动服务
-    systemctl enable s-ui --now || {
-        err "s-ui 启动失败"
-    }
+    sleep 3
     
     log "s-ui 安装完成"
 }
 
 # ------------------------------
-# 3. 开启 BBR（新增）
+# 4. 配置 s-ui 数据库（注入 suiApi2Key）
 # ------------------------------
-enable_bbr() {
-    log "检查并开启 BBR 加速..."
-
-    # 检查当前 TCP 拥塞控制算法
-    local current_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    log "当前 TCP 拥塞控制算法: $current_congestion"
-
-    # 检查是否已启用 BBR
-    if [ "$current_congestion" = "bbr" ]; then
-        log "BBR 已启用，跳过"
-        return 0
-    fi
-
-    # 检查内核是否支持 BBR
-    if ! modprobe tcp_bbr 2>/dev/null; then
-        warn "当前内核不支持 BBR，尝试升级内核？"
-        warn "跳过 BBR 配置"
-        return 1
-    fi
-
-    log "通过 s-ui 交互命令开启 BBR..."
-
-    # 使用 s-ui 命令开启 BBR（选项 18 -> 1）
-    # 注意：s-ui 命令需要交互式输入，使用 expect 或 echo 管道
-    if command -v expect &>/dev/null; then
-        # 使用 expect 更可靠
-        expect <<EOF
-set timeout 10
-spawn s-ui
-expect "请输入数字"
-send "18\r"
-expect "请输入数字"
-send "1\r"
-expect eof
-EOF
-    else
-        # 使用 echo 管道
-        echo -e "18\n1" | s-ui || {
-            warn "通过 s-ui 开启 BBR 失败，尝试直接配置 sysctl"
-            # 备用方案：直接配置 sysctl
-            enable_bbr_sysctl
-        }
-    fi
-
-    # 验证 BBR 是否已启用
-    sleep 2
-    local new_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    if [ "$new_congestion" = "bbr" ]; then
-        log "✅ BBR 已成功启用"
-    else
-        warn "BBR 可能未成功启用，当前算法: $new_congestion"
-        log "尝试直接配置 sysctl..."
-        enable_bbr_sysctl
-    fi
-}
-
-# ------------------------------
-# 3.1 备用方案：直接配置 sysctl
-# ------------------------------
-enable_bbr_sysctl() {
-    log "通过 sysctl 配置 BBR..."
-
-    # 检查内核支持
-    if ! modprobe tcp_bbr 2>/dev/null; then
-        warn "内核不支持 BBR，请升级内核到 4.9+"
-        return 1
-    fi
-
-    # 配置 sysctl
-    cat >> /etc/sysctl.conf <<EOF
-
-# BBR congestion control
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
-
-    # 应用配置
-    sysctl -p /etc/sysctl.conf || {
-        warn "应用 sysctl 配置失败"
-        return 1
-    }
-
-    # 验证
-    local new_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    if [ "$new_congestion" = "bbr" ]; then
-        log "✅ BBR 已通过 sysctl 启用"
-    else
-        warn "BBR 启用失败，当前算法: $new_congestion"
-        return 1
-    fi
-}
-
-# ------------------------------
-# 3.2 检查 BBR 状态（用于显示）
-# ------------------------------
-check_bbr_status() {
-    local congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
-    
-    if [ "$congestion" = "bbr" ]; then
-        echo "✅ BBR: 已启用 (算法: $congestion, qdisc: $qdisc)"
-    else
-        echo "❌ BBR: 未启用 (当前算法: $congestion)"
-    fi
-}
-
-# ------------------------------
-# 4. 等待 s-ui API 就绪
-# ------------------------------
-wait_sui() {
-    log "等待 s-ui 启动..."
-
-    local max_attempts=30
-    local attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        if curl -s http://127.0.0.1:2095 >/dev/null 2>&1; then
-            log "s-ui API 已就绪"
-            return 0
-        fi
-        
-        # 也检查面板端口
-        if curl -s http://127.0.0.1:2096 >/dev/null 2>&1; then
-            log "s-ui Web 已就绪"
-            return 0
-        fi
-        
-        attempt=$((attempt + 1))
-        log "等待中... ($attempt/$max_attempts)"
-        sleep 2
-    done
-
-    err "s-ui 启动超时，请检查服务状态: systemctl status s-ui"
-}
-
-# ------------------------------
-# 5. 创建 API Token
-# ------------------------------
-create_token() {
-    log "创建 API Token..."
+configure_sui_db() {
+    log "配置 s-ui 数据库 - 注入 suiApi2Key..."
 
     # 查找数据库
     local DB_PATH=$(find_sui_db)
     if [ -z "$DB_PATH" ]; then
-        warn "未找到 s-ui 数据库，尝试使用默认路径"
-        DB_PATH="/usr/local/s-ui/db/s-ui.db"
-        
-        if [ ! -f "$DB_PATH" ]; then
-            err "无法找到 s-ui 数据库，请确认 s-ui 已正确安装"
-        fi
+        err "未找到 s-ui 数据库"
     fi
     
     log "使用数据库: $DB_PATH"
 
-    # 检查 sqlite3 是否可用
-    if ! command -v sqlite3 &>/dev/null; then
-        err "sqlite3 未安装，请先安装 sqlite3"
+    # 检查 suiApi2Key
+    if [ ! -f /tmp/sui_api_key ]; then
+        err "suiApi2Key 文件不存在"
     fi
+    
+    local SUI_API_KEY=$(cat /tmp/sui_api_key)
+    
+    # 检查 users 表，获取或创建用户
+    local USER_ID=$(sqlite3 "$DB_PATH" "SELECT id FROM users LIMIT 1;" 2>/dev/null)
+    
+    if [ -z "$USER_ID" ]; then
+        log "创建默认用户..."
+        sqlite3 "$DB_PATH" <<EOF
+INSERT INTO users (username, password, email, enable)
+VALUES ('admin', 'admin123', 'admin@localhost', 1);
+EOF
+        USER_ID=$(sqlite3 "$DB_PATH" "SELECT id FROM users LIMIT 1;" 2>/dev/null)
+        log "用户创建完成，ID: $USER_ID"
+    fi
+    
+    log "使用 user_id: $USER_ID"
 
     # 检查 tokens 表是否存在
     local table_exists=$(sqlite3 "$DB_PATH" "SELECT name FROM sqlite_master WHERE type='table' AND name='tokens';" 2>/dev/null)
     
     if [ -z "$table_exists" ]; then
-        warn "tokens 表不存在，尝试创建..."
+        log "创建 tokens 表..."
         sqlite3 "$DB_PATH" <<EOF
 CREATE TABLE IF NOT EXISTS tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -257,39 +301,25 @@ CREATE TABLE IF NOT EXISTS tokens (
     user_id INTEGER
 );
 EOF
-        log "tokens 表创建完成"
     fi
 
-    # 获取用户 ID
-    USER_ID=$(sqlite3 "$DB_PATH" "SELECT id FROM users LIMIT 1;" 2>/dev/null)
-    
-    if [ -z "$USER_ID" ]; then
-        warn "未找到用户，使用默认 user_id=1"
-        USER_ID=1
-    fi
-    
-    log "使用 user_id: $USER_ID"
-
-    # 生成 API Token
-    API_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d "=+/" | head -c 32)
-    
-    # 插入 token
+    # 将 suiApi2Key 写入 s-ui 数据库
     sqlite3 "$DB_PATH" <<EOF
 INSERT OR REPLACE INTO tokens (desc, token, expiry, user_id)
-VALUES ('auto-install-token', '$API_TOKEN', 0, $USER_ID);
+VALUES ('sui-agent-api', '$SUI_API_KEY', 0, $USER_ID);
 EOF
 
     if [ $? -eq 0 ]; then
-        log "API Token 创建成功"
-        echo "$API_TOKEN" > /tmp/sui_api_token
-        chmod 600 /tmp/sui_api_token
+        log "✅ suiApi2Key 已写入 s-ui 数据库"
     else
-        err "API Token 创建失败"
+        err "suiApi2Key 写入数据库失败"
     fi
+
+    log "suiApi2Key 配置完成"
 }
 
 # ------------------------------
-# 6. 查找 s-ui 数据库路径
+# 5. 查找 s-ui 数据库路径
 # ------------------------------
 find_sui_db() {
     local db_paths=(
@@ -317,23 +347,130 @@ find_sui_db() {
 }
 
 # ------------------------------
-# 7. 安装 sui-agent
+# 6. 开启 BBR
+# ------------------------------
+enable_bbr() {
+    log "检查并开启 BBR 加速..."
+
+    local current_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    log "当前 TCP 拥塞控制算法: $current_congestion"
+
+    if [ "$current_congestion" = "bbr" ]; then
+        log "BBR 已启用，跳过"
+        return 0
+    fi
+
+    if ! modprobe tcp_bbr 2>/dev/null; then
+        warn "当前内核不支持 BBR"
+        return 1
+    fi
+
+    log "通过 s-ui 交互命令开启 BBR..."
+    echo -e "18\n1" | s-ui || {
+        warn "通过 s-ui 开启 BBR 失败，尝试直接配置 sysctl"
+        enable_bbr_sysctl
+    }
+
+    sleep 2
+    local new_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    if [ "$new_congestion" = "bbr" ]; then
+        log "✅ BBR 已成功启用"
+    else
+        warn "BBR 可能未成功启用，当前算法: $new_congestion"
+        enable_bbr_sysctl
+    fi
+}
+
+# ------------------------------
+# 6.1 备用方案：直接配置 sysctl
+# ------------------------------
+enable_bbr_sysctl() {
+    log "通过 sysctl 配置 BBR..."
+
+    if ! modprobe tcp_bbr 2>/dev/null; then
+        warn "内核不支持 BBR"
+        return 1
+    fi
+
+    cat >> /etc/sysctl.conf <<EOF
+
+# BBR congestion control
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+
+    sysctl -p /etc/sysctl.conf || {
+        warn "应用 sysctl 配置失败"
+        return 1
+    }
+
+    local new_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    if [ "$new_congestion" = "bbr" ]; then
+        log "✅ BBR 已通过 sysctl 启用"
+    else
+        warn "BBR 启用失败"
+        return 1
+    fi
+}
+
+# ------------------------------
+# 6.2 检查 BBR 状态
+# ------------------------------
+check_bbr_status() {
+    local congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    if [ "$congestion" = "bbr" ]; then
+        echo "✅ BBR: 已启用 (算法: $congestion, qdisc: $qdisc)"
+    else
+        echo "❌ BBR: 未启用 (当前算法: $congestion)"
+    fi
+}
+
+# ------------------------------
+# 7. 启动 s-ui
+# ------------------------------
+start_sui() {
+    log "启动 s-ui 服务..."
+    
+    systemctl enable s-ui --now || {
+        err "s-ui 启动失败"
+    }
+    
+    log "s-ui 已启动"
+}
+
+# ------------------------------
+# 8. 等待 s-ui API 就绪
+# ------------------------------
+wait_sui() {
+    log "等待 s-ui API 就绪..."
+
+    # 从配置中读取 api url
+    local SUI_API2_URL=$(jq -r '.suiApi2Url' /opt/sui-agent/config/agent.json 2>/dev/null || echo "http://localhost:2095")
+    
+    local max_attempts=30
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -s "${SUI_API2_URL}" >/dev/null 2>&1; then
+            log "s-ui API 已就绪: $SUI_API2_URL"
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+        log "等待中... ($attempt/$max_attempts)"
+        sleep 2
+    done
+
+    err "s-ui 启动超时，请检查服务状态: systemctl status s-ui"
+}
+
+# ------------------------------
+# 9. 安装 sui-agent
 # ------------------------------
 install_agent() {
     log "安装 sui-agent..."
-
-    # 检查 token 文件
-    if [ ! -f /tmp/sui_api_token ]; then
-        err "API Token 文件不存在，请先创建 token"
-    fi
-    
-    API_TOKEN=$(cat /tmp/sui_api_token)
-    
-    if [ -z "$API_TOKEN" ]; then
-        err "API Token 为空"
-    fi
-
-    log "使用 API Token: ${API_TOKEN:0:8}..."
 
     # 下载 agent 安装脚本
     local AGENT_SCRIPT="/tmp/agent_install.sh"
@@ -348,20 +485,9 @@ install_agent() {
     
     chmod +x "$AGENT_SCRIPT"
 
-    # 执行 agent 安装，传入 token
+    # 执行 agent 安装
     log "执行 agent 安装..."
-    
-    # 方式1: 通过环境变量传递
-    export SUI_API_TOKEN="$API_TOKEN"
-    
-    # 方式2: 通过参数传递（如果脚本支持）
-    if grep -q "\$1" "$AGENT_SCRIPT" 2>/dev/null; then
-        bash "$AGENT_SCRIPT" "$API_TOKEN"
-    else
-        # 方式3: 通过文件传递
-        echo "$API_TOKEN" > /tmp/agent_token
-        bash "$AGENT_SCRIPT"
-    fi
+    bash "$AGENT_SCRIPT"
     
     local exit_code=$?
     
@@ -369,12 +495,11 @@ install_agent() {
         log "Agent 安装成功"
     else
         warn "Agent 安装可能失败，退出码: $exit_code"
-        warn "请手动执行: bash $AGENT_SCRIPT $API_TOKEN"
     fi
 }
 
 # ------------------------------
-# 8. 验证安装
+# 10. 验证安装
 # ------------------------------
 verify_installation() {
     log "验证安装..."
@@ -390,10 +515,7 @@ verify_installation() {
     if systemctl is-active --quiet sui-agent; then
         log "✅ sui-agent 运行正常"
     else
-        warn "⚠️ sui-agent 未运行，尝试手动启动..."
-        systemctl start sui-agent 2>/dev/null || {
-            warn "无法启动 sui-agent，请检查配置"
-        }
+        warn "⚠️ sui-agent 未运行"
     fi
     
     # 检查 BBR
@@ -407,7 +529,7 @@ verify_installation() {
 }
 
 # ------------------------------
-# 9. 显示完成信息
+# 11. 显示完成信息
 # ------------------------------
 show_complete() {
     echo ""
@@ -420,11 +542,14 @@ show_complete() {
     echo "  - agent 端口: 10200 (Broker)"
     echo "  - BBR 状态: $(check_bbr_status)"
     echo ""
-    echo "🔑 API Token: $(cat /tmp/sui_api_token 2>/dev/null || echo '未生成')"
+    echo "🔑 密钥信息:"
+    echo "  - suiApi2Key: $(cat /tmp/sui_api_key 2>/dev/null || echo '未生成')"
+    echo "  - brokerKey:  $(cat /tmp/broker_key 2>/dev/null || echo '未生成')"
+    echo "  - PID:        $(jq -r '.pid' /opt/sui-agent/config/agent.json 2>/dev/null || echo '未生成')"
     echo ""
     echo "📂 配置文件:"
-    echo "  - s-ui 数据库: $(find_sui_db 2>/dev/null || echo '未找到')"
     echo "  - Agent 配置: /opt/sui-agent/config/agent.json"
+    echo "  - s-ui 数据库: $(find_sui_db 2>/dev/null || echo '未找到')"
     echo ""
     echo "🛠️ 管理命令:"
     echo "  - s-ui:   systemctl {start|stop|restart|status} s-ui"
@@ -436,12 +561,13 @@ show_complete() {
     echo ""
     echo "🌐 访问面板:"
     echo "  http://$(hostname -I | awk '{print $1}'):2096"
+    echo "  (默认账号: admin / admin123)"
     echo ""
     echo "=========================================="
 }
 
 # ------------------------------
-# 10. 清理临时文件
+# 12. 清理临时文件
 # ------------------------------
 cleanup() {
     log "清理临时文件..."
@@ -449,7 +575,7 @@ cleanup() {
 }
 
 # ------------------------------
-# 11. 主流程
+# 13. 主流程
 # ------------------------------
 main() {
     log "开始安装 SUI + SUI-Agent..."
@@ -461,15 +587,17 @@ main() {
     fi
     
     # 执行安装步骤
-    install_base
-    install_sui
-    enable_bbr          # ⭐ 新增：开启 BBR
-    wait_sui
-    create_token
-    install_agent
-    verify_installation
-    show_complete
-    cleanup
+    install_base          # 1. 安装基础依赖
+    pre_configure_agent   # 2. ⭐ 交互式配置 Agent（生成两个 Key）
+    install_sui          # 3. 安装 s-ui
+    configure_sui_db     # 4. ⭐ 将 suiApi2Key 写入 s-ui 数据库
+    enable_bbr           # 5. 开启 BBR
+    start_sui            # 6. 启动 s-ui
+    wait_sui             # 7. 等待 API 就绪
+    install_agent        # 8. 安装 Agent（使用已生成的配置）
+    verify_installation  # 9. 验证
+    show_complete        # 10. 显示完成信息
+    cleanup              # 11. 清理
     
     log "安装流程完成！"
 }
