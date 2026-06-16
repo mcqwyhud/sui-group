@@ -1,15 +1,12 @@
 #!/bin/bash
-# SUI Agent 一键安装脚本（完整版 + JSON交互配置增强版）
-# 支持 Linux + GitHub Release + systemd + JVM 管理 + JSON交互初始化
+
+# SUI Agent 一键安装脚本（修复稳定版）
 
 set -e
 
-# =========================
-# 颜色
-# =========================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -40,6 +37,9 @@ detect_os() {
 # =========================
 install_base() {
     print_info "检查基础工具..."
+
+    export DEBIAN_FRONTEND=noninteractive
+
     local tools=("wget" "curl" "tar" "tzdata" "jq")
     local missing=()
 
@@ -57,14 +57,14 @@ install_base() {
 
     case "$OS" in
         ubuntu|debian)
-            apt-get update -qq
-            apt-get install -y -qq "${missing[@]}"
+            apt-get update -y
+            apt-get install -y "${missing[@]}"
             ;;
         centos|rhel|almalinux|rocky)
-            yum install -y -q "${missing[@]}"
+            yum install -y "${missing[@]}"
             ;;
         fedora)
-            dnf install -y -q "${missing[@]}"
+            dnf install -y "${missing[@]}"
             ;;
     esac
 }
@@ -90,7 +90,7 @@ install_java() {
 }
 
 # =========================
-# 用户目录
+# 用户 & 目录
 # =========================
 setup_user_and_dir() {
     id suiagent &>/dev/null || useradd -r -s /bin/false suiagent
@@ -103,26 +103,45 @@ setup_user_and_dir() {
 }
 
 # =========================
-# 下载jar（保持原逻辑）
+# 下载 JAR（修复版）
 # =========================
 download_jar() {
     print_info "下载 JAR..."
-    # 这里保持你原逻辑（略简，但结构不变）
+
     GITHUB_REPO="mcqwyhud/sui-agent"
     RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
-    API=$(curl -s "$RELEASE_URL")
-    JAR_NAME=$(echo "$API" | jq -r '.assets[]|select(.name|endswith(".jar"))|.name' | head -1)
+    API=$(curl -s --fail "$RELEASE_URL")
 
-    wget -O "/opt/sui-agent/$JAR_NAME" "https://github.com/$GITHUB_REPO/releases/latest/download/$JAR_NAME"
+    if [ -z "$API" ]; then
+        print_error "GitHub API 请求失败"
+        exit 1
+    fi
+
+    # 防止 null crash
+    JAR_NAME=$(echo "$API" | jq -r '.assets[]? | select(.name | endswith(".jar")) | .name' | head -n 1)
+
+    if [ -z "$JAR_NAME" ] || [ "$JAR_NAME" == "null" ]; then
+        print_error "未找到 JAR 文件"
+        echo "$API" | jq .
+        exit 1
+    fi
+
+    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/$JAR_NAME"
+
+    wget -O "/opt/sui-agent/$JAR_NAME" "$DOWNLOAD_URL"
+
+    if [ ! -f "/opt/sui-agent/$JAR_NAME" ]; then
+        print_error "JAR 下载失败"
+        exit 1
+    fi
 
     chown suiagent:suiagent "/opt/sui-agent/$JAR_NAME"
 }
 
 # =========================
-# JSON配置（核心新增）
+# JSON配置（原样保留）
 # =========================
-
 CONFIG_FILE="/opt/sui-agent/config/external.json"
 
 uuid_gen() {
@@ -153,7 +172,6 @@ setup_json_config() {
 
     mkdir -p /opt/sui-agent/config
 
-    # 默认值
     brokerKey_def="TuAyStnLhnVX9l215cgciVWFDhs2CrrehFZTEgJVtrM="
     brokerHost_def="127.0.0.1"
     brokerPort_def="10200"
@@ -171,9 +189,8 @@ setup_json_config() {
     auto_up_mbps_def="0"
     auto_down_mbps_def="0"
 
-    # 如果存在就读取
     if [ -f "$CONFIG_FILE" ]; then
-        print_warning "检测到已有配置，将进入编辑模式"
+        print_warning "检测到已有配置"
         old=$(cat "$CONFIG_FILE")
 
         brokerKey=$(echo "$old" | jq -r '.brokerKey')
@@ -201,7 +218,7 @@ setup_json_config() {
     fi
 
     echo ""
-    print_info "开始交互式配置（直接回车使用默认值）"
+    print_info "开始交互式配置"
     echo ""
 
     brokerKey=$(ask "brokerKey" "$brokerKey_def" "$brokerKey")
@@ -244,7 +261,7 @@ EOF
 
     chown suiagent:suiagent "$CONFIG_FILE"
 
-    print_info "JSON 配置完成: $CONFIG_FILE"
+    print_info "JSON 配置完成"
 }
 
 # =========================
@@ -275,18 +292,12 @@ EOF
     systemctl enable sui-agent
 }
 
-# =========================
-# 启动
-# =========================
 start_service() {
     systemctl start sui-agent
     sleep 2
     systemctl is-active --quiet sui-agent && print_info "启动成功"
 }
 
-# =========================
-# CLI工具
-# =========================
 create_cli() {
     cat > /usr/local/bin/sui-a <<'EOF'
 #!/bin/bash
@@ -311,7 +322,7 @@ main() {
     install_java
     setup_user_and_dir
     download_jar
-    setup_json_config     # ⭐ 核心新增
+    setup_json_config
     create_service
     create_cli
     start_service
