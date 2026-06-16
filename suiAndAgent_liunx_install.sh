@@ -34,12 +34,10 @@ gen_uuid() {
     if command -v uuidgen &>/dev/null; then
         uuidgen | tr '[:upper:]' '[:lower:]'
     else
-        # 手动生成标准 UUID 格式
         local uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
         if [ -n "$uuid" ]; then
             echo "$uuid"
         else
-            # 备用方案：生成随机 UUID
             printf "%08x-%04x-%04x-%04x-%012x\n" \
                 $((RANDOM*65536 + RANDOM)) \
                 $((RANDOM*65536 + RANDOM)) \
@@ -305,6 +303,29 @@ EOF
         err "suiApi2Key 写入数据库失败"
     fi
     
+    # ==========================================
+    # 6. ⭐ 重启 s-ui 使配置生效
+    # ==========================================
+    log "重启 s-ui 使数据库配置生效..."
+    
+    if systemctl is-active --quiet s-ui; then
+        log "s-ui 正在运行，执行重启..."
+        systemctl restart s-ui
+        if [ $? -eq 0 ]; then
+            log "✅ s-ui 重启成功"
+        else
+            warn "s-ui 重启失败，请手动执行: systemctl restart s-ui"
+        fi
+    else
+        log "s-ui 未运行，启动 s-ui..."
+        systemctl start s-ui
+        if [ $? -eq 0 ]; then
+            log "✅ s-ui 启动成功"
+        else
+            warn "s-ui 启动失败，请手动执行: systemctl start s-ui"
+        fi
+    fi
+    
     log "✅ 所有配置已完成"
 }
 
@@ -418,20 +439,7 @@ check_bbr_status() {
 }
 
 # ------------------------------
-# 6. 启动 s-ui
-# ------------------------------
-start_sui() {
-    log "启动 s-ui 服务..."
-    
-    systemctl enable s-ui --now || {
-        err "s-ui 启动失败"
-    }
-    
-    log "s-ui 已启动"
-}
-
-# ------------------------------
-# 7. 等待 s-ui API 就绪
+# 6. 等待 s-ui API 就绪
 # ------------------------------
 wait_sui() {
     log "等待 s-ui API 就绪..."
@@ -454,7 +462,7 @@ wait_sui() {
 }
 
 # ------------------------------
-# 8. 安装 sui-agent
+# 7. 安装 sui-agent
 # ------------------------------
 install_agent() {
     log "安装 sui-agent..."
@@ -486,7 +494,7 @@ install_agent() {
 }
 
 # ------------------------------
-# 9. 验证安装
+# 8. 验证安装
 # ------------------------------
 verify_installation() {
     log "验证安装..."
@@ -516,7 +524,7 @@ verify_installation() {
 }
 
 # ------------------------------
-# 10. 显示完成信息
+# 9. 显示完成信息
 # ------------------------------
 show_complete() {
     echo ""
@@ -554,7 +562,7 @@ show_complete() {
 }
 
 # ------------------------------
-# 11. 清理临时文件
+# 10. 清理临时文件
 # ------------------------------
 cleanup() {
     log "清理临时文件..."
@@ -562,7 +570,7 @@ cleanup() {
 }
 
 # ------------------------------
-# 12. 主流程
+# 11. 主流程
 # ------------------------------
 main() {
     log "开始安装 SUI + SUI-Agent..."
@@ -576,14 +584,13 @@ main() {
     # 执行安装步骤
     install_base              # 1. 安装基础依赖
     install_sui              # 2. 安装 s-ui
-    configure_agent_and_sui  # 3. ⭐ 统一配置（交互 + 生成配置 + 写入数据库）
+    configure_agent_and_sui  # 3. ⭐ 统一配置（交互 + 生成配置 + 写入数据库 + 重启 s-ui）
     enable_bbr               # 4. 开启 BBR
-    start_sui                # 5. 启动 s-ui
-    wait_sui                 # 6. 等待 API 就绪
-    install_agent            # 7. 安装 Agent（使用已生成的配置）
-    verify_installation      # 8. 验证
-    show_complete            # 9. 显示完成信息
-    cleanup                  # 10. 清理
+    wait_sui                 # 5. 等待 API 就绪
+    install_agent            # 6. 安装 Agent（使用已生成的配置）
+    verify_installation      # 7. 验证
+    show_complete            # 8. 显示完成信息
+    cleanup                  # 9. 清理
     
     log "安装流程完成！"
 }
