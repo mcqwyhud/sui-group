@@ -1,8 +1,11 @@
 #!/bin/bash
 
-# SUI Agent 一键安装脚本（修复稳定版）
+# SUI Agent 一键安装脚本（修复交互卡死版）
 
 set -e
+
+# 🔥 关键修复：恢复交互输入能力（必须放最顶部）
+exec < /dev/tty
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -33,12 +36,10 @@ detect_os() {
 }
 
 # =========================
-# 基础工具
+# 基础工具（不改逻辑）
 # =========================
 install_base() {
     print_info "检查基础工具..."
-
-    export DEBIAN_FRONTEND=noninteractive
 
     local tools=("wget" "curl" "tar" "tzdata" "jq")
     local missing=()
@@ -103,7 +104,7 @@ setup_user_and_dir() {
 }
 
 # =========================
-# 下载 JAR（修复版）
+# 下载 JAR（原样逻辑）
 # =========================
 download_jar() {
     print_info "下载 JAR..."
@@ -111,36 +112,17 @@ download_jar() {
     GITHUB_REPO="mcqwyhud/sui-agent"
     RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
-    API=$(curl -s --fail "$RELEASE_URL")
+    API=$(curl -s "$RELEASE_URL")
 
-    if [ -z "$API" ]; then
-        print_error "GitHub API 请求失败"
-        exit 1
-    fi
+    JAR_NAME=$(echo "$API" | jq -r '.assets[]|select(.name|endswith(".jar"))|.name' | head -1)
 
-    # 防止 null crash
-    JAR_NAME=$(echo "$API" | jq -r '.assets[]? | select(.name | endswith(".jar")) | .name' | head -n 1)
-
-    if [ -z "$JAR_NAME" ] || [ "$JAR_NAME" == "null" ]; then
-        print_error "未找到 JAR 文件"
-        echo "$API" | jq .
-        exit 1
-    fi
-
-    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/$JAR_NAME"
-
-    wget -O "/opt/sui-agent/$JAR_NAME" "$DOWNLOAD_URL"
-
-    if [ ! -f "/opt/sui-agent/$JAR_NAME" ]; then
-        print_error "JAR 下载失败"
-        exit 1
-    fi
+    wget -O "/opt/sui-agent/$JAR_NAME" "https://github.com/$GITHUB_REPO/releases/latest/download/$JAR_NAME"
 
     chown suiagent:suiagent "/opt/sui-agent/$JAR_NAME"
 }
 
 # =========================
-# JSON配置（原样保留）
+# JSON交互配置（完全保留）
 # =========================
 CONFIG_FILE="/opt/sui-agent/config/external.json"
 
@@ -212,7 +194,6 @@ setup_json_config() {
         auto_vpsId=$(echo "$old" | jq -r '.auto_vpsId')
         auto_up_mbps=$(echo "$old" | jq -r '.auto_up_mbps')
         auto_down_mbps=$(echo "$old" | jq -r '.auto_down_mbps')
-
     else
         pid=$(uuid_gen)
     fi
@@ -327,7 +308,6 @@ main() {
     create_cli
     start_service
 
-    echo ""
     print_info "安装完成"
 }
 
