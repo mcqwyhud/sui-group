@@ -112,7 +112,7 @@ setup_json_config() {
 
     print_info "初始化 JSON 配置..."
 
-    CONFIG_FILE="/opt/sui-agent/config/external.json"
+    CONFIG_FILE="/opt/sui-agent/config/agent.json"
 
     brokerKey_def="xxx"
     brokerHost_def="127.0.0.1"
