@@ -32,7 +32,7 @@ install_base() {
 install_sui() {
     log "安装 s-ui..."
 
-    curl -sSL https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh | bash
+    curl -sSL https://raw.githubusercontent.com/admin8800/s-ui/master/install.sh | bash
 
     sleep 5
 
