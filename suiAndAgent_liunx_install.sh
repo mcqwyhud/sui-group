@@ -103,10 +103,32 @@ install_base() {
 }
 
 # ------------------------------
-# 2. 交互式配置 Agent（在 s-ui 安装前）
+# 2. 安装 s-ui（官方）
 # ------------------------------
-pre_configure_agent() {
-    log "开始交互式配置 Agent..."
+install_sui() {
+    log "安装 s-ui..."
+
+    # 检查是否已安装
+    if systemctl status s-ui &>/dev/null; then
+        warn "s-ui 已安装，跳过"
+        return 0
+    fi
+
+    # 下载并执行官方安装脚本
+    if ! curl -sSL https://raw.githubusercontent.com/admin8800/s-ui/master/install.sh | bash; then
+        err "s-ui 安装失败"
+    fi
+
+    sleep 3
+    
+    log "s-ui 安装完成"
+}
+
+# ------------------------------
+# 3. 交互式配置（在 s-ui 启动前完成所有配置）
+# ------------------------------
+configure_agent_and_sui() {
+    log "开始配置 Agent 和 s-ui..."
     
     # 创建 Agent 目录
     mkdir -p /opt/sui-agent/{config,logs,data,conf}
@@ -118,8 +140,9 @@ pre_configure_agent() {
     fi
     
     echo ""
-    log "请输入 Agent 配置信息（直接回车使用默认值）"
+    log "请输入配置信息（直接回车使用默认值）"
     echo "=========================================="
+    echo ""
     
     # ==========================================
     # 生成 PID (Java 风格 UUID)
@@ -196,7 +219,9 @@ pre_configure_agent() {
         exit 0
     fi
 
-    # 创建 agent.json 配置文件
+    # ==========================================
+    # 4. 创建 agent.json 配置文件
+    # ==========================================
     local CONFIG_FILE="/opt/sui-agent/config/agent.json"
     
     cat > "$CONFIG_FILE" <<EOF
@@ -223,38 +248,10 @@ EOF
     chmod 644 "$CONFIG_FILE"
     
     log "✅ Agent 配置文件已创建: $CONFIG_FILE"
-    echo ""
-    log "📌 两个 Key 的作用:"
-    log "  - suiApi2Key: 用于 agent 调用 s-ui API (将写入 s-ui 数据库)"
-    log "  - brokerKey:  用于 agent 集群内部通信 (仅 agent 使用)"
-}
-
-# ------------------------------
-# 3. 安装 s-ui（官方）
-# ------------------------------
-install_sui() {
-    log "安装 s-ui..."
-
-    # 检查是否已安装
-    if systemctl status s-ui &>/dev/null; then
-        warn "s-ui 已安装，跳过"
-        return 0
-    fi
-
-    # 下载并执行官方安装脚本
-    if ! curl -sSL https://raw.githubusercontent.com/admin8800/s-ui/master/install.sh | bash; then
-        err "s-ui 安装失败"
-    fi
-
-    sleep 3
     
-    log "s-ui 安装完成"
-}
-
-# ------------------------------
-# 4. 配置 s-ui 数据库（注入 suiApi2Key）
-# ------------------------------
-configure_sui_db() {
+    # ==========================================
+    # 5. 配置 s-ui 数据库（注入 suiApi2Key）
+    # ==========================================
     log "配置 s-ui 数据库 - 注入 suiApi2Key..."
 
     # 查找数据库
@@ -265,13 +262,6 @@ configure_sui_db() {
     
     log "使用数据库: $DB_PATH"
 
-    # 检查 suiApi2Key
-    if [ ! -f /tmp/sui_api_key ]; then
-        err "suiApi2Key 文件不存在"
-    fi
-    
-    local SUI_API_KEY=$(cat /tmp/sui_api_key)
-    
     # 检查 users 表，获取或创建用户
     local USER_ID=$(sqlite3 "$DB_PATH" "SELECT id FROM users LIMIT 1;" 2>/dev/null)
     
@@ -314,12 +304,12 @@ EOF
     else
         err "suiApi2Key 写入数据库失败"
     fi
-
-    log "suiApi2Key 配置完成"
+    
+    log "✅ 所有配置已完成"
 }
 
 # ------------------------------
-# 5. 查找 s-ui 数据库路径
+# 4. 查找 s-ui 数据库路径
 # ------------------------------
 find_sui_db() {
     local db_paths=(
@@ -347,7 +337,7 @@ find_sui_db() {
 }
 
 # ------------------------------
-# 6. 开启 BBR
+# 5. 开启 BBR
 # ------------------------------
 enable_bbr() {
     log "检查并开启 BBR 加速..."
@@ -382,7 +372,7 @@ enable_bbr() {
 }
 
 # ------------------------------
-# 6.1 备用方案：直接配置 sysctl
+# 5.1 备用方案：直接配置 sysctl
 # ------------------------------
 enable_bbr_sysctl() {
     log "通过 sysctl 配置 BBR..."
@@ -414,7 +404,7 @@ EOF
 }
 
 # ------------------------------
-# 6.2 检查 BBR 状态
+# 5.2 检查 BBR 状态
 # ------------------------------
 check_bbr_status() {
     local congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
@@ -428,7 +418,7 @@ check_bbr_status() {
 }
 
 # ------------------------------
-# 7. 启动 s-ui
+# 6. 启动 s-ui
 # ------------------------------
 start_sui() {
     log "启动 s-ui 服务..."
@@ -441,20 +431,17 @@ start_sui() {
 }
 
 # ------------------------------
-# 8. 等待 s-ui API 就绪
+# 7. 等待 s-ui API 就绪
 # ------------------------------
 wait_sui() {
     log "等待 s-ui API 就绪..."
 
-    # 从配置中读取 api url
-    local SUI_API2_URL=$(jq -r '.suiApi2Url' /opt/sui-agent/config/agent.json 2>/dev/null || echo "http://localhost:2095")
-    
     local max_attempts=30
     local attempt=0
     
     while [ $attempt -lt $max_attempts ]; do
-        if curl -s "${SUI_API2_URL}" >/dev/null 2>&1; then
-            log "s-ui API 已就绪: $SUI_API2_URL"
+        if curl -s http://127.0.0.1:2095 >/dev/null 2>&1; then
+            log "s-ui API 已就绪"
             return 0
         fi
         
@@ -467,7 +454,7 @@ wait_sui() {
 }
 
 # ------------------------------
-# 9. 安装 sui-agent
+# 8. 安装 sui-agent
 # ------------------------------
 install_agent() {
     log "安装 sui-agent..."
@@ -499,7 +486,7 @@ install_agent() {
 }
 
 # ------------------------------
-# 10. 验证安装
+# 9. 验证安装
 # ------------------------------
 verify_installation() {
     log "验证安装..."
@@ -529,7 +516,7 @@ verify_installation() {
 }
 
 # ------------------------------
-# 11. 显示完成信息
+# 10. 显示完成信息
 # ------------------------------
 show_complete() {
     echo ""
@@ -567,7 +554,7 @@ show_complete() {
 }
 
 # ------------------------------
-# 12. 清理临时文件
+# 11. 清理临时文件
 # ------------------------------
 cleanup() {
     log "清理临时文件..."
@@ -575,7 +562,7 @@ cleanup() {
 }
 
 # ------------------------------
-# 13. 主流程
+# 12. 主流程
 # ------------------------------
 main() {
     log "开始安装 SUI + SUI-Agent..."
@@ -587,17 +574,16 @@ main() {
     fi
     
     # 执行安装步骤
-    install_base          # 1. 安装基础依赖
-    pre_configure_agent   # 2. ⭐ 交互式配置 Agent（生成两个 Key）
-    install_sui          # 3. 安装 s-ui
-    configure_sui_db     # 4. ⭐ 将 suiApi2Key 写入 s-ui 数据库
-    enable_bbr           # 5. 开启 BBR
-    start_sui            # 6. 启动 s-ui
-    wait_sui             # 7. 等待 API 就绪
-    install_agent        # 8. 安装 Agent（使用已生成的配置）
-    verify_installation  # 9. 验证
-    show_complete        # 10. 显示完成信息
-    cleanup              # 11. 清理
+    install_base              # 1. 安装基础依赖
+    install_sui              # 2. 安装 s-ui
+    configure_agent_and_sui  # 3. ⭐ 统一配置（交互 + 生成配置 + 写入数据库）
+    enable_bbr               # 4. 开启 BBR
+    start_sui                # 5. 启动 s-ui
+    wait_sui                 # 6. 等待 API 就绪
+    install_agent            # 7. 安装 Agent（使用已生成的配置）
+    verify_installation      # 8. 验证
+    show_complete            # 9. 显示完成信息
+    cleanup                  # 10. 清理
     
     log "安装流程完成！"
 }
