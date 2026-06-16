@@ -77,24 +77,32 @@ setup_user_and_dir() {
 }
 
 download_jar() {
-    print_info "下载 JAR..."
+    print_info "下载文件..."
 
     GITHUB_REPO="mcqwyhud/sui-agent"
     RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
     if [ -z "$GITHUB_TOKEN" ]; then
-        read -p "请输入 GitHub Token: " GITHUB_TOKEN
+        read -p "请输入 GitHub 令牌: " GITHUB_TOKEN
     fi
 
-    API=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL")
+    API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$RELEASE_URL")
 
-    JAR_NAME=$(echo "$API" | jq -r '.assets[]|select(.name|endswith(".jar"))|.name' | head -1)
+    JAR_NAME=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith(".jar")) | .name' | head -1)
+
+    ASSET_ID=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith(".jar")) | .id' | head -1)
+
+    if [ -z "$JAR_NAME" ] || [ -z "$ASSET_ID" ]; then
+        print_error "未找到 jar 文件"
+        exit 1
+    fi
+
+    DOWNLOAD_URL="https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
 
     wget --header="Authorization: token $GITHUB_TOKEN" \
+         --header="Accept: application/octet-stream" \
          -O "/opt/sui-agent/$JAR_NAME" \
-         "https://github.com/$GITHUB_REPO/releases/latest/download/$JAR_NAME"
-
-    chown suiagent:suiagent "/opt/sui-agent/$JAR_NAME"
+         "$DOWNLOAD_URL"
 }
 
 # =========================
