@@ -3,8 +3,7 @@
 # 支持 Linux 系统，自动安装依赖，从私有仓库下载 jar 并部署为 systemd 服务
 # 改进：使用 jq + assets API，增加 SHA256 校验，支持 JVM 参数动态修改
 # 注意：Agent 为 iogame 应用，无 Spring Boot，无需 jprotobuf-cache 和 tmp 目录
-# SUI Agent 一键安装脚本（完整版 + JSON交互配置增强版）
-# 支持 Linux + GitHub Release + systemd + JVM 管理 + JSON交互初始化
+# 自动检测配置文件，如果存在则跳过交互
 
 set -e
 
@@ -72,7 +71,6 @@ install_base() {
 
     print_info "需要安装的工具: ${missing[*]}"
     
-    # 更新缓存
     local need_update=false
     case "${OS}" in
         ubuntu|debian)
@@ -179,18 +177,18 @@ setup_user_and_dir() {
 }
 
 # =========================
-# UUID 生成
+# UUID 生成函数
 # =========================
 uuid_gen() {
     if command -v uuidgen &>/dev/null; then
-        uuidgen
+        uuidgen | tr '[:upper:]' '[:lower:]'
     else
         cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "uuid-$(date +%s)"
     fi
 }
 
 # =========================
-# JSON 配置（agent.json）- 修复：如果存在则跳过交互
+# JSON 配置（agent.json）- 纯文件检测，无环境变量
 # =========================
 setup_json_config() {
     print_info "初始化 JSON 配置..."
@@ -199,7 +197,7 @@ setup_json_config() {
     local CONFIG_FILE="/opt/sui-agent/config/agent.json"
     
     # ==========================================
-    # 如果配置文件已存在，直接加载并跳过交互
+    # 【核心】检查配置文件是否已存在
     # ==========================================
     if [ -f "$CONFIG_FILE" ]; then
         print_info "检测到已有配置文件: $CONFIG_FILE"
@@ -210,10 +208,10 @@ setup_json_config() {
                 print_info "✅ 配置文件完整，跳过交互式配置"
                 
                 # 显示当前配置摘要
-                local brokerKey=$(jq -r '.brokerKey' "$CONFIG_FILE" 2>/dev/null)
-                local brokerHost=$(jq -r '.brokerHost' "$CONFIG_FILE" 2>/dev/null)
-                local brokerPort=$(jq -r '.brokerPort' "$CONFIG_FILE" 2>/dev/null)
-                local agentName=$(jq -r '.agentName' "$CONFIG_FILE" 2>/dev/null)
+                local brokerKey=$(jq -r '.brokerKey // "unknown"' "$CONFIG_FILE" 2>/dev/null)
+                local brokerHost=$(jq -r '.brokerHost // "unknown"' "$CONFIG_FILE" 2>/dev/null)
+                local brokerPort=$(jq -r '.brokerPort // "unknown"' "$CONFIG_FILE" 2>/dev/null)
+                local agentName=$(jq -r '.agentName // "unknown"' "$CONFIG_FILE" 2>/dev/null)
                 
                 echo ""
                 print_info "当前配置摘要:"
@@ -230,14 +228,14 @@ setup_json_config() {
                 mv "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%s)"
             fi
         else
-            print_warning "jq 未安装，无法验证配置文件"
-            print_info "跳过交互，使用已有配置"
+            # 没有 jq，但文件存在，直接使用
+            print_info "jq 未安装，跳过验证，使用已有配置"
             return 0
         fi
     fi
     
     # ==========================================
-    # 如果配置文件不存在，进入交互式配置
+    # 配置文件不存在，进入交互式配置
     # ==========================================
     print_info "未检测到配置文件，开始交互式配置..."
     
@@ -335,17 +333,6 @@ EOF
 }
 
 # =========================
-# UUID 生成函数
-# =========================
-uuid_gen() {
-    if command -v uuidgen &>/dev/null; then
-        uuidgen | tr '[:upper:]' '[:lower:]'
-    else
-        cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "uuid-$(date +%s)"
-    fi
-}
-
-# =========================
 # 下载 JAR
 # =========================
 download_jar() {
@@ -353,7 +340,6 @@ download_jar() {
     local GITHUB_REPO="mcqwyhud/sui-agent"
     local RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
     
-    # 获取 GitHub Token
     if [ -z "$GITHUB_TOKEN" ]; then
         echo ""
         print_info "请输入 GitHub 个人访问令牌（需有 repo 权限）:"
@@ -392,7 +378,6 @@ download_jar() {
     fi
     print_info "JAR 文件名: $JAR_NAME"
 
-    # 尝试通过 assets API 下载
     local ASSETS_DOWNLOAD_URL="https://api.github.com/repos/$GITHUB_REPO/releases/assets/$ASSET_ID"
     print_info "通过 assets API 下载 JAR 文件..."
     local DOWNLOAD_ERROR=false
@@ -407,7 +392,6 @@ download_jar() {
              -o "/opt/sui-agent/$JAR_NAME" "$ASSETS_DOWNLOAD_URL" || DOWNLOAD_ERROR=true
     fi
 
-    # 如果 assets API 失败，尝试标准 URL
     if [ "$DOWNLOAD_ERROR" = true ] || [ ! -f "/opt/sui-agent/$JAR_NAME" ]; then
         print_warning "assets API 下载失败，尝试使用标准 Release URL..."
         local STANDARD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/$JAR_NAME"
@@ -427,14 +411,12 @@ download_jar() {
         fi
     fi
 
-    # 验证文件大小
     local FILE_SIZE=$(stat -c%s "/opt/sui-agent/$JAR_NAME" 2>/dev/null || stat -f%z "/opt/sui-agent/$JAR_NAME" 2>/dev/null)
     if [ "$FILE_SIZE" -lt 1000000 ]; then
         print_error "文件大小异常: $FILE_SIZE 字节"
         exit 1
     fi
 
-    # SHA256 校验
     if [ -n "$EXPECTED_SHA256" ]; then
         local LOCAL_SHA256=$(sha256sum "/opt/sui-agent/$JAR_NAME" | awk '{print $1}')
         if [ "$LOCAL_SHA256" != "$EXPECTED_SHA256" ]; then
