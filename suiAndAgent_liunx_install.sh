@@ -168,16 +168,16 @@ configure_agent_and_sui() {
     echo ""
     
     # ==========================================
-    # 3. 交互式配置所有参数
+    # 3. 交互式配置所有参数（默认使用 127.0.0.1）
     # ==========================================
     
     # broker 配置
-    BROKER_HOST=$(ask "brokerHost (agent 监听地址)" "localhost")
-    BROKER_PORT=$(ask "brokerPort (agent 监听端口)" "10200")
+    BROKER_HOST=$(ask "brokerHost (集群网关地址)" "127.0.0.1")
+    BROKER_PORT=$(ask "brokerPort (集群网关端口)" "10200")
     
     # s-ui 配置
-    SUI_SUB_URL=$(ask "suiSubUrl (s-ui 订阅地址)" "http://localhost:2096/sub/")
-    SUI_API2_URL=$(ask "suiApi2Url (s-ui API 地址)" "http://localhost:2095")
+    SUI_SUB_URL=$(ask "suiSubUrl (s-ui 订阅地址)" "http://127.0.0.1:2096/sub/")
+    SUI_API2_URL=$(ask "suiApi2Url (s-ui API 地址)" "http://127.0.0.1:2095")
     SUI_API2_PATH=$(ask "suiApi2Path (s-ui API 路径)" "/app/apiv2")
     
     # Agent 信息
