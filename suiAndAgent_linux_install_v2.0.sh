@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================
-# SUI + SUI-Agent 一键安装脚本
+# SUI + SUI-Agent 一键安装脚本 v2.0
 # ==============================
 # 支持两种模式：
 #   1. 交互式：直接运行，会提示输入
@@ -12,7 +12,8 @@
 #   export AGENT_NAME="子节点逻辑服-1"
 #   export AUTO_CREATE_INBOUND="true"
 #   export AUTO_VPS_ID="美国1"
-#   ./suiAndAgent_linux_install.sh
+#   export GITHUB_TOKEN="your_github_token"
+#   ./suiAndAgent_linux_install_v2.0.sh
 # ==============================
 
 set -e
@@ -31,6 +32,17 @@ warn(){ echo -e "${YELLOW}[WARNING]${NC} $1"; }
 # ------------------------------
 is_non_interactive() {
     [ -n "$BROKER_HOST" ] || [ -n "$BROKER_PORT" ] || [ -n "$AGENT_NAME" ] || [ -n "$AUTO_CREATE_INBOUND" ]
+}
+
+# ------------------------------
+# 检测是否为交互式终端
+# ------------------------------
+is_interactive_shell() {
+    if [ -t 0 ] && [ -t 1 ]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # ------------------------------
@@ -478,29 +490,212 @@ wait_sui() {
 }
 
 # ------------------------------
-# 7. 安装 sui-agent
+# 7. 安装 sui-agent（支持交互式/非交互式）
 # ------------------------------
 install_agent() {
     log "安装 sui-agent..."
 
-    local AGENT_SCRIPT="/tmp/agent_install.sh"
-    
-    log "下载 agent 安装脚本..."
-    if ! curl -sSL https://raw.githubusercontent.com/mcqwyhud/sui-group/main/agent_linux_install_v1.0.sh -o "$AGENT_SCRIPT"; then
-        warn "从主仓库下载失败，尝试备用地址..."
-        if ! curl -sSL https://raw.githubusercontent.com/mcqwyhud/sui-agent/main/install.sh -o "$AGENT_SCRIPT" 2>/dev/null; then
-            err "无法下载 agent 安装脚本"
+    # ==========================================
+    # 1. 获取 GitHub Token（交互式或环境变量）
+    # ==========================================
+    if [ -z "$GITHUB_TOKEN" ]; then
+        # 检测是否为交互式环境且不是非交互式模式
+        if is_interactive_shell && ! is_non_interactive; then
+            echo ""
+            log "检测到交互式环境，请输入 GitHub Token"
+            echo "（私有仓库需要 Token，公开仓库可以跳过）"
+            read -p "GitHub Token (按回车跳过): " input_token
+            if [ -n "$input_token" ]; then
+                GITHUB_TOKEN="$input_token"
+                export GITHUB_TOKEN="$input_token"
+                log "✅ Token 已设置"
+            else
+                warn "未输入 Token，将尝试公开下载"
+            fi
+        else
+            warn "非交互式环境，GITHUB_TOKEN 未设置"
+            warn "将尝试公开下载，如果失败请设置环境变量 GITHUB_TOKEN"
         fi
+    else
+        log "✅ 使用环境变量中的 GITHUB_TOKEN"
+    fi
+
+    # ==========================================
+    # 2. 下载 Agent 安装脚本
+    # ==========================================
+    local AGENT_SCRIPT="/tmp/agent_install.sh"
+    log "下载 agent 安装脚本..."
+    
+    if [ -n "$GITHUB_TOKEN" ]; then
+        log "使用 GitHub Token 下载..."
+        curl -sSL -H "Authorization: token $GITHUB_TOKEN" \
+            https://raw.githubusercontent.com/mcqwyhud/sui-group/main/agent_linux_install_v1.0.sh \
+            -o "$AGENT_SCRIPT" 2>/dev/null || {
+                warn "从主仓库下载失败，尝试备用地址..."
+                curl -sSL -H "Authorization: token $GITHUB_TOKEN" \
+                    https://raw.githubusercontent.com/mcqwyhud/sui-agent/main/install.sh \
+                    -o "$AGENT_SCRIPT" 2>/dev/null || {
+                        err "无法下载 agent 安装脚本（需要 GITHUB_TOKEN）"
+                    }
+            }
+    else
+        log "尝试公开下载..."
+        curl -sSL https://raw.githubusercontent.com/mcqwyhud/sui-group/main/agent_linux_install_v1.0.sh \
+            -o "$AGENT_SCRIPT" 2>/dev/null || {
+                warn "公开下载失败，尝试备用地址..."
+                curl -sSL https://raw.githubusercontent.com/mcqwyhud/sui-agent/main/install.sh \
+                    -o "$AGENT_SCRIPT" 2>/dev/null || {
+                        warn "无法下载 agent 安装脚本，将尝试手动安装..."
+                        install_agent_manual
+                        return $?
+                    }
+            }
+    fi
+    
+    if [ ! -f "$AGENT_SCRIPT" ] || [ ! -s "$AGENT_SCRIPT" ]; then
+        warn "Agent 安装脚本下载失败或为空，尝试手动安装..."
+        install_agent_manual
+        return $?
     fi
     
     chmod +x "$AGENT_SCRIPT"
-    bash "$AGENT_SCRIPT"
+
+    # ==========================================
+    # 3. 执行安装（根据环境决定是否交互）
+    # ==========================================
+    if [ -n "$GITHUB_TOKEN" ]; then
+        # 有 Token，非交互式执行
+        log "执行 agent 安装（非交互式）..."
+        export GITHUB_TOKEN="$GITHUB_TOKEN"
+        bash "$AGENT_SCRIPT" </dev/null
+    else
+        # 没有 Token，根据环境决定
+        if is_non_interactive; then
+            # 非交互式环境，尝试自动安装
+            log "非交互式环境，尝试自动安装..."
+            bash "$AGENT_SCRIPT" </dev/null
+        else
+            # 交互式环境，让用户交互（Agent 安装脚本会询问 Token）
+            log "交互式环境，执行 agent 安装（允许交互）..."
+            bash "$AGENT_SCRIPT"
+        fi
+    fi
     
     local exit_code=$?
+    
     if [ $exit_code -eq 0 ]; then
         log "✅ Agent 安装成功"
     else
-        warn "Agent 安装可能失败，退出码: $exit_code"
+        warn "Agent 安装失败，退出码: $exit_code"
+        log "尝试手动安装 Agent..."
+        install_agent_manual
+    fi
+}
+
+# ------------------------------
+# 7.1 手动安装 Agent（备用方案）
+# ------------------------------
+install_agent_manual() {
+    log "手动安装 sui-agent..."
+
+    mkdir -p /opt/sui-agent/{config,logs,data,conf}
+    
+    if ! id -u suiagent &>/dev/null; then
+        useradd -r -s /bin/false suiagent
+        log "用户 suiagent 创建成功"
+    fi
+    
+    # ==========================================
+    # 获取 Token（如果是交互式环境）
+    # ==========================================
+    if [ -z "$GITHUB_TOKEN" ]; then
+        if is_interactive_shell && ! is_non_interactive; then
+            echo ""
+            log "手动安装需要 GitHub Token 下载 JAR 文件"
+            read -p "GitHub Token (按回车跳过): " input_token
+            if [ -n "$input_token" ]; then
+                GITHUB_TOKEN="$input_token"
+                export GITHUB_TOKEN="$input_token"
+                log "✅ Token 已设置"
+            fi
+        fi
+    fi
+
+    # ==========================================
+    # 下载 JAR 文件
+    # ==========================================
+    local JAR_URL="https://github.com/mcqwyhud/sui-agent/releases/latest/download/sui-agent.jar"
+    local JAR_FILE="/opt/sui-agent/sui-agent.jar"
+    
+    log "下载 Agent JAR 文件..."
+    
+    if [ -n "$GITHUB_TOKEN" ]; then
+        log "使用 GitHub Token 下载 JAR..."
+        curl -sSL -H "Authorization: token $GITHUB_TOKEN" \
+            "$JAR_URL" -o "$JAR_FILE" 2>/dev/null || {
+                warn "JAR 下载失败，尝试使用 GitHub API..."
+                local API_URL="https://api.github.com/repos/mcqwyhud/sui-agent/releases/latest"
+                local DOWNLOAD_URL=$(curl -sSL -H "Authorization: token $GITHUB_TOKEN" \
+                    "$API_URL" 2>/dev/null | grep -o '"browser_download_url": "[^"]*\.jar"' | head -1 | cut -d'"' -f4)
+                if [ -n "$DOWNLOAD_URL" ]; then
+                    curl -sSL -H "Authorization: token $GITHUB_TOKEN" \
+                        "$DOWNLOAD_URL" -o "$JAR_FILE"
+                fi
+            }
+    else
+        log "尝试直接下载 JAR（公开仓库）..."
+        curl -sSL "$JAR_URL" -o "$JAR_FILE" 2>/dev/null || {
+            warn "JAR 下载失败（可能需要 GITHUB_TOKEN）"
+            return 1
+        }
+    fi
+    
+    if [ ! -f "$JAR_FILE" ]; then
+        err "无法下载 Agent JAR 文件"
+    fi
+    
+    if [ ! -s "$JAR_FILE" ]; then
+        err "下载的 JAR 文件为空"
+    fi
+    
+    chown suiagent:suiagent "$JAR_FILE"
+    chmod 644 "$JAR_FILE"
+    
+    # ==========================================
+    # 创建 systemd 服务
+    # ==========================================
+    log "创建 systemd 服务..."
+    cat > /etc/systemd/system/sui-agent.service <<'EOF'
+[Unit]
+Description=SUI Agent Service
+After=network.target
+
+[Service]
+Type=simple
+User=suiagent
+Group=suiagent
+WorkingDirectory=/opt/sui-agent
+ExecStart=/usr/bin/java -jar /opt/sui-agent/sui-agent.jar
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable sui-agent
+    systemctl start sui-agent
+    
+    sleep 2
+    
+    if systemctl is-active --quiet sui-agent; then
+        log "✅ sui-agent 安装并启动成功"
+    else
+        warn "sui-agent 启动失败，请检查日志: journalctl -u sui-agent -f"
+        log "手动启动命令: systemctl start sui-agent"
     fi
 }
 
@@ -556,11 +751,16 @@ show_complete() {
     echo ""
     echo "🛠️ 管理命令:"
     echo "  - s-ui:   systemctl {start|stop|restart|status} s-ui"
-    echo "  - agent:  sui-a {start|stop|restart|status|logs}"
+    echo "  - agent:  systemctl {start|stop|restart|status} sui-agent"
+    echo ""
+    echo "📊 查看日志:"
+    echo "  - s-ui:   journalctl -u s-ui -f"
+    echo "  - agent:  journalctl -u sui-agent -f"
     echo ""
     echo "🌐 访问面板:"
-    echo "  http://$(hostname -I | awk '{print $1}'):2095/app"
+    echo "  http://$(hostname -I | awk '{print $1}'):2096"
     echo "  (默认账号: admin / admin123)"
+    echo ""
     echo "=========================================="
 }
 
@@ -569,18 +769,29 @@ show_complete() {
 # ------------------------------
 cleanup() {
     log "清理临时文件..."
-    rm -f /tmp/agent_install.sh /tmp/agent_token 2>/dev/null
+    rm -f /tmp/agent_install.sh /tmp/agent_token /tmp/main_script.sh 2>/dev/null
 }
 
 # ------------------------------
 # 11. 主流程
 # ------------------------------
 main() {
-    log "开始安装 SUI + SUI-Agent..."
+    log "开始安装 SUI + SUI-Agent v2.0..."
     echo "=========================================="
     
     if [ "$EUID" -ne 0 ]; then
         err "请使用 root 用户运行此脚本"
+    fi
+    
+    # 显示 GITHUB_TOKEN 状态
+    if [ -n "$GITHUB_TOKEN" ]; then
+        log "✅ GITHUB_TOKEN 已设置"
+    else
+        if is_interactive_shell && ! is_non_interactive; then
+            log "ℹ️ 交互式环境，如需访问私有仓库请在后续输入 Token"
+        else
+            warn "⚠️ GITHUB_TOKEN 未设置，如果仓库是私有的将无法下载"
+        fi
     fi
     
     install_base
