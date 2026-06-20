@@ -248,10 +248,7 @@ configure_agent_and_sui() {
     AGENT_NAME=$(get_config "AGENT_NAME" "agentName (节点名称)" "子节点逻辑服1")
     AGENT_TAG=$(get_config "AGENT_TAG" "agentTag (节点标签)" "子节点逻辑服")
     REPORT_VPS_TIME=$(get_config "REPORT_VPS_TIME" "reportVpsTime (上报间隔，毫秒)" "600000")
-    AUTO_CREATE_INBOUND=$(get_config "AUTO_CREATE_INBOUND" "auto_create_inbound (自动创建入站 true/false)" "false")
     AUTO_VPS_ID=$(get_config "AUTO_VPS_ID" "auto_vpsId (VPS ID)" "美国1")
-    AUTO_UP_MBPS=$(get_config "AUTO_UP_MBPS" "auto_up_mbps (上行限速 Mbps，0 不限)" "0")
-    AUTO_DOWN_MBPS=$(get_config "AUTO_DOWN_MBPS" "auto_down_mbps (下行限速 Mbps，0 不限)" "0")
     
     # 如果是交互式模式，显示确认信息
     if [ "$is_non_interactive" = "false" ]; then
@@ -269,10 +266,7 @@ configure_agent_and_sui() {
         echo "  agentName:              $AGENT_NAME"
         echo "  agentTag:               $AGENT_TAG"
         echo "  reportVpsTime:          $REPORT_VPS_TIME"
-        echo "  auto_create_inbound:    $AUTO_CREATE_INBOUND"
         echo "  auto_vpsId:             $AUTO_VPS_ID"
-        echo "  auto_up_mbps:           $AUTO_UP_MBPS"
-        echo "  auto_down_mbps:         $AUTO_DOWN_MBPS"
         echo "=========================================="
         
         local confirm=$(ask "确认以上配置？(y/n)" "y")
@@ -287,7 +281,6 @@ configure_agent_and_sui() {
         echo "  AGENT_NAME:             $AGENT_NAME"
         echo "  AUTO_CREATE_INBOUND:    $AUTO_CREATE_INBOUND"
         echo "  AUTO_VPS_ID:            $AUTO_VPS_ID"
-        echo "  AUTO_UP_MBPS:           $AUTO_UP_MBPS"
         echo "  AUTO_DOWN_MBPS:         $AUTO_DOWN_MBPS"
     fi
 
@@ -310,10 +303,7 @@ configure_agent_and_sui() {
   "suiApi2Url": "$SUI_API2_URL",
   "suiApi2Path": "$SUI_API2_PATH",
   "suiCheckInterval": 10000,
-  "auto_create_inbound": $AUTO_CREATE_INBOUND,
-  "auto_vpsId": "$AUTO_VPS_ID",
-  "auto_up_mbps": $AUTO_UP_MBPS,
-  "auto_down_mbps": $AUTO_DOWN_MBPS
+  "auto_vpsId": "$AUTO_VPS_ID"
 }
 EOF
 
