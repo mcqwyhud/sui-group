@@ -188,8 +188,6 @@ configure_agent_and_sui() {
     # 自动创建入站配置
     AUTO_CREATE_INBOUND=$(ask "auto_create_inbound (自动创建入站 true/false)" "false")
     AUTO_VPS_ID=$(ask "auto_vpsId (VPS ID)" "美国1")
-    AUTO_UP_MBPS=$(ask "auto_up_mbps (上行限速 Mbps，0 不限)" "0")
-    AUTO_DOWN_MBPS=$(ask "auto_down_mbps (下行限速 Mbps，0 不限)" "0")
     
     echo ""
     log "配置信息确认:"
@@ -207,8 +205,6 @@ configure_agent_and_sui() {
     echo "  reportVpsTime:          $REPORT_VPS_TIME"
     echo "  auto_create_inbound:    $AUTO_CREATE_INBOUND"
     echo "  auto_vpsId:             $AUTO_VPS_ID"
-    echo "  auto_up_mbps:           $AUTO_UP_MBPS"
-    echo "  auto_down_mbps:         $AUTO_DOWN_MBPS"
     echo "=========================================="
     
     local confirm=$(ask "确认以上配置？(y/n)" "y")
@@ -236,9 +232,7 @@ configure_agent_and_sui() {
   "suiApi2Url": "$SUI_API2_URL",
   "suiApi2Path": "$SUI_API2_PATH",
   "auto_create_inbound": $AUTO_CREATE_INBOUND,
-  "auto_vpsId": "$AUTO_VPS_ID",
-  "auto_up_mbps": $AUTO_UP_MBPS,
-  "auto_down_mbps": $AUTO_DOWN_MBPS
+  "auto_vpsId": "$AUTO_VPS_ID"
 }
 EOF
 
