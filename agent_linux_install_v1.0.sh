@@ -240,7 +240,6 @@ setup_json_config() {
     print_info "未检测到配置文件，开始交互式配置..."
     
     # 定义默认值
-    local brokerKey_def="TuAyStnLhnVX9l215cgciVWFDhs2CrrehFZTEgJVtrM="
     local brokerHost_def="localhost"
     local brokerPort_def="10200"
     local suiSubUrl_def="http://localhost:2096/sub/"
@@ -252,8 +251,6 @@ setup_json_config() {
     local reportVpsTime_def="600000"
     local auto_create_inbound_def="false"
     local auto_vpsId_def="美国1"
-    local auto_up_mbps_def="0"
-    local auto_down_mbps_def="0"
 
     # 生成 PID
     local pid=$(uuid_gen)
@@ -262,48 +259,72 @@ setup_json_config() {
     print_info "开始交互式配置（直接回车使用默认值）"
     echo ""
 
-    # 交互式输入
-    read -p "brokerKey [$brokerKey_def]: " input
-    local brokerKey="${input:-$brokerKey_def}"
+    # ==========================================
+    # brokerKey 是必填项，无默认值
+    # ==========================================
+    echo "【必填】网关通信密钥，用于 Agent 与网关之间的身份验证    echo     echo (总控后台可查看)"
+    while true; do
+        read -p "brokerKey (必填): " brokerKey
+        if [ -n "$brokerKey" ]; then
+            break
+        else
+            print_error "brokerKey 是必填项，请重新输入"
+        fi
+    done
     
+    echo ""
+    echo "【网关配置】"
+    echo "  - brokerHost: 网关服务地址（域名或 IP）"
     read -p "brokerHost [$brokerHost_def]: " input
     local brokerHost="${input:-$brokerHost_def}"
     
+    echo "  - brokerPort: 网关服务端口"
     read -p "brokerPort [$brokerPort_def]: " input
     local brokerPort="${input:-$brokerPort_def}"
     
+    echo ""
+    echo "【SUI API 配置】"
+    echo "  - suiSubUrl: SUI 订阅接口地址"
     read -p "suiSubUrl [$suiSubUrl_def]: " input
     local suiSubUrl="${input:-$suiSubUrl_def}"
     
+    echo "  - suiApi2Key: SUI API v2 接口密钥(令牌)"
     read -p "suiApi2Key [$suiApi2Key_def]: " input
     local suiApi2Key="${input:-$suiApi2Key_def}"
     
+    echo "  - suiApi2Url: SUI API v2 接口地址"
     read -p "suiApi2Url [$suiApi2Url_def]: " input
     local suiApi2Url="${input:-$suiApi2Url_def}"
     
+    echo "  - suiApi2Path: SUI API v2 接口路径"
     read -p "suiApi2Path [$suiApi2Path_def]: " input
     local suiApi2Path="${input:-$suiApi2Path_def}"
     
+    echo ""
+    echo "【Agent 基本信息】"
+    echo "  - agentName: Agent 显示名称"
     read -p "agentName [$agentName_def]: " input
     local agentName="${input:-$agentName_def}"
     
+    echo "  - agentTag: Agent 标签，用于分类（⚠️ 禁止修改）"
     read -p "agentTag [$agentTag_def]: " input
     local agentTag="${input:-$agentTag_def}"
     
+    echo ""
+    echo "【VPS 监控配置】"
+    echo "  - reportVpsTime: VPS 状态上报间隔（毫秒）"
     read -p "reportVpsTime [$reportVpsTime_def]: " input
     local reportVpsTime="${input:-$reportVpsTime_def}"
     
+    echo ""
+    echo "【自动创建入站配置】"
+    echo "  - auto_create_inbound: 是否自动创建入站节点（true/false）"
     read -p "auto_create_inbound [$auto_create_inbound_def]: " input
     local auto_create_inbound="${input:-$auto_create_inbound_def}"
     
+    echo "  - auto_vpsId: 自动创建时的 VPS 标识"
     read -p "auto_vpsId [$auto_vpsId_def]: " input
     local auto_vpsId="${input:-$auto_vpsId_def}"
-    
-    read -p "auto_up_mbps [$auto_up_mbps_def]: " input
-    local auto_up_mbps="${input:-$auto_up_mbps_def}"
-    
-    read -p "auto_down_mbps [$auto_down_mbps_def]: " input
-    local auto_down_mbps="${input:-$auto_down_mbps_def}"
 
     # 写入配置文件
     cat > "$CONFIG_FILE" <<EOF
@@ -320,9 +341,7 @@ setup_json_config() {
   "suiApi2Url": "$suiApi2Url",
   "suiApi2Path": "$suiApi2Path",
   "auto_create_inbound": $auto_create_inbound,
-  "auto_vpsId": "$auto_vpsId",
-  "auto_up_mbps": $auto_up_mbps,
-  "auto_down_mbps": $auto_down_mbps
+  "auto_vpsId": "$auto_vpsId"
 }
 EOF
 
