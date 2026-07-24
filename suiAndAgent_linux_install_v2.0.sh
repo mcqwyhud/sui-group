@@ -1,7 +1,6 @@
 #!/bin/bash
 # ==============================
 # SUI + SUI-Agent 一键安装脚本 v2.0
-# ==============================
 # 支持两种模式：
 #   1. 交互式：直接运行，会提示输入
 #   2. 非交互式：通过环境变量传递配置
@@ -134,6 +133,53 @@ get_config() {
     ask "$prompt" "$default"
 }
 
+# ====== 新增：处理数据库模板下载（仅交互式使用） ======
+handle_sui_db() {
+    local DB_DIR="/usr/local/s-ui/db/"
+    local DB_FILE="${DB_DIR}s-ui.db"
+    
+    # 如果未提供 URL，则跳过
+    if [ -z "$SUI_DB_URL" ]; then
+        return 0
+    fi
+    
+    log "检测到数据库模板链接，开始下载..."
+    
+    # 备份已有数据库
+    if [ -f "$DB_FILE" ]; then
+        local BACKUP_FILE="${DB_FILE}.bak.$(date +%s)"
+        log "发现已有数据库，备份到 $BACKUP_FILE"
+        cp "$DB_FILE" "$BACKUP_FILE"
+    fi
+    
+    mkdir -p "$DB_DIR"
+    if curl -sSL --connect-timeout 30 --max-time 120 "$SUI_DB_URL" -o "$DB_FILE"; then
+        if [ -s "$DB_FILE" ] && file "$DB_FILE" | grep -q "SQLite"; then
+            chmod 644 "$DB_FILE"
+            log "✅ 数据库模板下载成功并验证通过"
+            return 0
+        else
+            rm -f "$DB_FILE"
+            if [ -f "$BACKUP_FILE" ]; then
+                mv "$BACKUP_FILE" "$DB_FILE"
+                log "下载的文件无效，已恢复原有数据库"
+            else
+                log "下载的文件无效，已删除，将使用默认初始化"
+            fi
+            return 1
+        fi
+    else
+        if [ -f "$BACKUP_FILE" ]; then
+            mv "$BACKUP_FILE" "$DB_FILE"
+            log "下载失败，已恢复原有数据库"
+        else
+            log "下载失败，将使用默认初始化"
+        fi
+        return 1
+    fi
+}
+# ====== 新增结束 ======
+
 # ------------------------------
 # 1. 基础依赖
 # ------------------------------
@@ -250,6 +296,13 @@ configure_agent_and_sui() {
     REPORT_VPS_TIME=$(get_config "REPORT_VPS_TIME" "reportVpsTime (上报间隔，毫秒)" "600000")
     AUTO_CREATE_INBOUND=$(get_config "AUTO_CREATE_INBOUND" "auto_create_inbound (自动创建入站 true/false)" "false")
     AUTO_VPS_ID=$(get_config "AUTO_VPS_ID" "auto_vpsId (VPS ID)" "美国1")
+
+    # ====== 新增：交互式询问数据库模板链接（仅交互式） ======
+    SUI_DB_URL=""
+    if [ "$is_non_interactive" = "false" ]; then
+        SUI_DB_URL=$(ask "数据库模板链接（留空跳过）" "")
+    fi
+    # ====== 新增结束 ======
     
     # 如果是交互式模式，显示确认信息
     if [ "$is_non_interactive" = "false" ]; then
@@ -268,6 +321,13 @@ configure_agent_and_sui() {
         echo "  agentTag:               $AGENT_TAG"
         echo "  reportVpsTime:          $REPORT_VPS_TIME"
         echo "  auto_vpsId:             $AUTO_VPS_ID"
+        # ====== 新增：显示数据库模板链接（如有） ======
+        if [ -n "$SUI_DB_URL" ]; then
+            echo "  数据库模板:             $SUI_DB_URL"
+        else
+            echo "  数据库模板:             未设置"
+        fi
+        # ====== 新增结束 ======
         echo "=========================================="
         
         local confirm=$(ask "确认以上配置？(y/n)" "y")
@@ -312,6 +372,12 @@ EOF
     chmod 644 "$CONFIG_FILE"
     
     log "✅ Agent 配置文件已创建: $CONFIG_FILE"
+
+    # ====== 新增：如果提供了数据库模板链接，则下载 ======
+    if [ -n "$SUI_DB_URL" ]; then
+        handle_sui_db
+    fi
+    # ====== 新增结束 ======
     
     # ==========================================
     # 配置 s-ui 数据库
@@ -743,9 +809,9 @@ show_complete() {
     echo "  - agent:  journalctl -u sui-agent -f"
     echo ""
     echo "🌐 访问面板:"
-    echo "  （默认地址）http://$(hostname -I | awk '{print $1}'):2095/app/"
+    echo "  http://$(hostname -I | awk '{print $1}'):2095/app/"
     echo "  (默认账号: admin / admin123)"
-    echo "  地址或账号密码不正确时可执行s-ui命令自行查看"
+    echo "  地址或账号密码不正确时可执行 s-ui 命令自行查看"
     echo "  使用正确地址如无法访问，请检查安全组/防火墙规则"
     echo ""
     echo "=========================================="
