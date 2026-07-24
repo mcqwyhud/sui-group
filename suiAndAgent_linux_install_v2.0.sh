@@ -552,24 +552,18 @@ install_agent() {
     chmod +x "$AGENT_SCRIPT"
 
     # ==========================================
-    # 3. 执行安装（根据环境决定是否交互）
+    # 3. ⭐ 根据是否有 Token 决定子脚本的执行方式
     # ==========================================
     if [ -n "$GITHUB_TOKEN" ]; then
-        # 有 Token，非交互式执行
-        log "执行 agent 安装（非交互式）..."
+        # 【有 Token】→ 非交互式执行（子脚本不会询问 Token）
+        log "检测到 GITHUB_TOKEN，以非交互式方式执行 agent 安装..."
         export GITHUB_TOKEN="$GITHUB_TOKEN"
         bash "$AGENT_SCRIPT" </dev/null
     else
-        # 没有 Token，根据环境决定
-        if is_non_interactive; then
-            # 非交互式环境，尝试自动安装
-            log "非交互式环境，尝试自动安装..."
-            bash "$AGENT_SCRIPT" </dev/null
-        else
-            # 交互式环境，让用户交互（Agent 安装脚本会询问 Token）
-            log "交互式环境，执行 agent 安装（允许交互）..."
-            bash "$AGENT_SCRIPT"
-        fi
+        # 【无 Token】→ 交互式执行（子脚本会询问 Token 和配置）
+        log "未检测到 GITHUB_TOKEN，以交互式方式执行 agent 安装..."
+        log "（子脚本将提示输入 Token 和配置信息）"
+        bash "$AGENT_SCRIPT"
     fi
     
     local exit_code=$?
