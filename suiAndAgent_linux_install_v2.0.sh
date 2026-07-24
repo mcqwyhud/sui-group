@@ -161,32 +161,22 @@ handle_sui_db() {
     mkdir -p "$DB_DIR"
     log "正在下载数据库模板..."
     if curl -sSL --connect-timeout 30 --max-time 120 "$SUI_DB_URL" -o "$DB_FILE"; then
-        # 显示下载的文件大小
-        log "下载完成，文件大小: $(ls -lh "$DB_FILE" | awk '{print $5}')"
-        
-        # 严格验证：使用 sqlite3 执行查询
-        if [ -s "$DB_FILE" ] && command -v sqlite3 &>/dev/null; then
-            if sqlite3 "$DB_FILE" "SELECT name FROM sqlite_master WHERE type='table' AND name='users';" | grep -q "users"; then
-                chmod 644 "$DB_FILE"
-                log "✅ 数据库模板下载成功并验证通过（包含 users 表）"
-                return 0
+        if [ -s "$DB_FILE" ] && file "$DB_FILE" | grep -q "SQLite"; then
+            chmod 644 "$DB_FILE"
+            log "✅ 数据库下载成功并验证通过"
+            return 0
+        else
+            rm -f "$DB_FILE"
+            if [ -f "$BACKUP_FILE" ]; then
+                mv "$BACKUP_FILE" "$DB_FILE"
+                log "下载的文件无效，已恢复原有数据库"
             else
-                log "数据库缺少 users 表或无法查询"
+                log "下载的文件无效，已删除，将使用默认初始化"
             fi
-        else
-            log "文件无效或 sqlite3 不可用"
+            return 1
         fi
-        # 验证失败，恢复备份
-        rm -f "$DB_FILE"
-        if [ -f "$BACKUP_FILE" ]; then
-            mv "$BACKUP_FILE" "$DB_FILE"
-            log "下载的文件无效，已恢复原有数据库"
-        else
-            log "下载的文件无效，已删除，将使用默认初始化"
-        fi
-        return 1
     else
-        log "下载失败（curl 返回非零）"
+        log "下载失败"
         if [ -f "$BACKUP_FILE" ]; then
             mv "$BACKUP_FILE" "$DB_FILE"
             log "下载失败，已恢复原有数据库"
