@@ -743,7 +743,7 @@ show_complete() {
     echo "  - agent:  journalctl -u sui-agent -f"
     echo ""
     echo "🌐 访问面板:"
-    echo "  （默认地址）http://$(hostname -I | awk '{print $1}'):2095"
+    echo "  （默认地址）http://$(hostname -I | awk '{print $1}'):2095/app/"
     echo "  (默认账号: admin / admin123)"
     echo "  地址或账号密码不正确时可执行s-ui命令自行查看"
     echo "  使用正确地址如无法访问，请检查安全组/防火墙规则"
