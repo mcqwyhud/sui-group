@@ -152,14 +152,14 @@ handle_sui_db() {
     
     mkdir -p "$DB_DIR"
     if curl -sSL --connect-timeout 30 --max-time 120 "$SUI_DB_URL" -o "$DB_FILE"; then
-        # 使用 sqlite3 进行实际查询验证
+        # 严格验证：使用 sqlite3 执行查询，确保数据库可读写且包含必要表
         if [ -s "$DB_FILE" ] && command -v sqlite3 &>/dev/null; then
-            if sqlite3 "$DB_FILE" "SELECT 1;" >/dev/null 2>&1; then
+            if sqlite3 "$DB_FILE" "SELECT name FROM sqlite_master WHERE type='table' AND name='users';" | grep -q "users"; then
                 chmod 644 "$DB_FILE"
-                log "✅ 数据库模板下载成功并验证通过"
+                log "✅ 数据库模板下载成功并验证通过（包含 users 表）"
                 return 0
             else
-                log "数据库文件损坏或无法查询"
+                log "数据库缺少 users 表或无法查询"
             fi
         else
             log "文件无效或 sqlite3 不可用"
