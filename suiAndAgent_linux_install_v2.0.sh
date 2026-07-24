@@ -144,6 +144,14 @@ handle_sui_db() {
     
     log "检测到数据库模板链接，开始下载..."
     
+    # 停止 s-ui 服务，避免文件锁
+    if systemctl is-active --quiet s-ui; then
+        log "停止 s-ui 服务以安全操作数据库..."
+        systemctl stop s-ui
+        sleep 1
+    fi
+    
+    # 备份已有数据库
     if [ -f "$DB_FILE" ]; then
         local BACKUP_FILE="${DB_FILE}.bak.$(date +%s)"
         log "发现已有数据库，备份到 $BACKUP_FILE"
@@ -151,8 +159,12 @@ handle_sui_db() {
     fi
     
     mkdir -p "$DB_DIR"
+    log "正在下载数据库模板..."
     if curl -sSL --connect-timeout 30 --max-time 120 "$SUI_DB_URL" -o "$DB_FILE"; then
-        # 严格验证：使用 sqlite3 执行查询，确保数据库可读写且包含必要表
+        # 显示下载的文件大小
+        log "下载完成，文件大小: $(ls -lh "$DB_FILE" | awk '{print $5}')"
+        
+        # 严格验证：使用 sqlite3 执行查询
         if [ -s "$DB_FILE" ] && command -v sqlite3 &>/dev/null; then
             if sqlite3 "$DB_FILE" "SELECT name FROM sqlite_master WHERE type='table' AND name='users';" | grep -q "users"; then
                 chmod 644 "$DB_FILE"
@@ -174,6 +186,7 @@ handle_sui_db() {
         fi
         return 1
     else
+        log "下载失败（curl 返回非零）"
         if [ -f "$BACKUP_FILE" ]; then
             mv "$BACKUP_FILE" "$DB_FILE"
             log "下载失败，已恢复原有数据库"
