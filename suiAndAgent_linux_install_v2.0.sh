@@ -133,7 +133,7 @@ get_config() {
     ask "$prompt" "$default"
 }
 
-# 处理s-ui数据库模板下载（仅交互式使用）
+# ====== 新增：处理数据库模板下载（仅交互式使用） ======
 handle_sui_db() {
     local DB_DIR="/usr/local/s-ui/db/"
     local DB_FILE="${DB_DIR}s-ui.db"
@@ -144,8 +144,8 @@ handle_sui_db() {
     
     log "检测到数据库模板链接，开始下载..."
     
-    # 停止 s-ui 服务，避免文件锁
-    if systemctl is-active --quiet s-ui; then
+    # 停止 s-ui 服务（如果正在运行），避免文件锁
+    if systemctl is-active --quiet s-ui 2>/dev/null; then
         log "停止 s-ui 服务以安全操作数据库..."
         systemctl stop s-ui
         sleep 1
@@ -186,6 +186,26 @@ handle_sui_db() {
         return 1
     fi
 }
+
+# ====== 新增：在安装 s-ui 之前，交互式询问并下载数据库 ======
+prepare_db() {
+    # 仅在交互式模式下询问
+    if is_non_interactive; then
+        return 0
+    fi
+    
+    echo ""
+    log "准备数据库（可选）"
+    echo "如果已有数据库模板（含用户和配置），可输入链接下载，跳过后续手动设置"
+    local db_url=$(ask "数据库模板链接（留空跳过）" "")
+    if [ -n "$db_url" ]; then
+        SUI_DB_URL="$db_url"
+        handle_sui_db
+    else
+        log "未提供模板链接，将使用 s-ui 默认初始化"
+    fi
+}
+# ====== 新增结束 ======
 
 # ------------------------------
 # 1. 基础依赖
@@ -303,13 +323,6 @@ configure_agent_and_sui() {
     REPORT_VPS_TIME=$(get_config "REPORT_VPS_TIME" "reportVpsTime (上报间隔，毫秒)" "600000")
     AUTO_CREATE_INBOUND=$(get_config "AUTO_CREATE_INBOUND" "auto_create_inbound (自动创建入站 true/false)" "false")
     AUTO_VPS_ID=$(get_config "AUTO_VPS_ID" "auto_vpsId (VPS ID)" "美国1")
-
-    # ====== 新增：交互式询问数据库模板链接（仅交互式） ======
-    SUI_DB_URL=""
-    if [ "$is_non_interactive" = "false" ]; then
-        SUI_DB_URL=$(ask "数据库模板链接（留空跳过）" "")
-    fi
-    # ====== 新增结束 ======
     
     # 如果是交互式模式，显示确认信息
     if [ "$is_non_interactive" = "false" ]; then
@@ -328,13 +341,6 @@ configure_agent_and_sui() {
         echo "  agentTag:               $AGENT_TAG"
         echo "  reportVpsTime:          $REPORT_VPS_TIME"
         echo "  auto_vpsId:             $AUTO_VPS_ID"
-        # ====== 新增：显示数据库模板链接（如有） ======
-        if [ -n "$SUI_DB_URL" ]; then
-            echo "  数据库模板:             $SUI_DB_URL"
-        else
-            echo "  数据库模板:             未设置"
-        fi
-        # ====== 新增结束 ======
         echo "=========================================="
         
         local confirm=$(ask "确认以上配置？(y/n)" "y")
@@ -379,12 +385,6 @@ EOF
     chmod 644 "$CONFIG_FILE"
     
     log "✅ Agent 配置文件已创建: $CONFIG_FILE"
-
-    # ====== 新增：如果提供了数据库模板链接，则下载 ======
-    if [ -n "$SUI_DB_URL" ]; then
-        handle_sui_db
-    fi
-    # ====== 新增结束 ======
     
     # ==========================================
     # 配置 s-ui 数据库
@@ -398,18 +398,20 @@ EOF
     
     log "使用数据库: $DB_PATH"
 
-    local USER_ID=$(sqlite3 "$DB_PATH" "SELECT id FROM users LIMIT 1;" 2>/dev/null)
-    
-    if [ -z "$USER_ID" ]; then
-        log "创建默认用户..."
-        sqlite3 "$DB_PATH" <<EOF
-INSERT INTO users (username, password, email, enable)
-VALUES ('admin', 'admin123', 'admin@localhost', 1);
-EOF
+    # 检查 users 表是否存在且有用户
+    local USER_COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM users;" 2>/dev/null)
+    if [ -z "$USER_COUNT" ] || [ "$USER_COUNT" -eq 0 ]; then
+        log "未找到用户，尝试创建默认用户（适配不同表结构）..."
+        # 先尝试插入最简字段
+        sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO users (username, password) VALUES ('admin', 'admin123');" 2>/dev/null || true
+        # 尝试更新其他常见字段（忽略错误）
+        sqlite3 "$DB_PATH" "UPDATE users SET email='admin@localhost', enable=1, last_logins='' WHERE username='admin';" 2>/dev/null || true
         USER_ID=$(sqlite3 "$DB_PATH" "SELECT id FROM users LIMIT 1;" 2>/dev/null)
         log "用户创建完成，ID: $USER_ID"
+    else
+        log "检测到已有用户记录，跳过创建默认用户"
+        USER_ID=$(sqlite3 "$DB_PATH" "SELECT id FROM users LIMIT 1;" 2>/dev/null)
     fi
-    
     log "使用 user_id: $USER_ID"
 
     local table_exists=$(sqlite3 "$DB_PATH" "SELECT name FROM sqlite_master WHERE type='table' AND name='tokens';" 2>/dev/null)
@@ -855,6 +857,10 @@ main() {
     fi
     
     install_base
+    
+    # ====== 在安装 s-ui 之前，交互式询问并下载数据库
+    prepare_db
+    
     install_sui
     configure_agent_and_sui
     enable_bbr || true
