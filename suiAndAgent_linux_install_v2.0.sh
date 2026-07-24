@@ -12,6 +12,7 @@
 #   export AUTO_CREATE_INBOUND="true"
 #   export AUTO_VPS_ID="美国1"
 #   export GITHUB_TOKEN="your_github_token"
+#   export BROKER_KEY="your_broker_key"   # 新增必填
 #   ./suiAndAgent_linux_install_v2.0.sh
 # ==============================
 
@@ -294,14 +295,28 @@ configure_agent_and_sui() {
     fi
     
     # ==========================================
-    # 生成或获取 brokerKey
+    # 获取或询问 brokerKey（网关密钥，必填）
     # ==========================================
     if [ -n "$BROKER_KEY" ]; then
-        BROKER_KEY="$BROKER_KEY"
-        log "使用指定的 brokerKey: ${BROKER_KEY:0:16}..."
+        # 通过环境变量传递
+        log "使用环境变量中的 brokerKey: ${BROKER_KEY:0:16}..."
     else
-        BROKER_KEY=$(gen_random 32)
-        log "生成 brokerKey: ${BROKER_KEY:0:16}..."
+        if is_non_interactive; then
+            err "非交互式模式下必须设置环境变量 BROKER_KEY"
+        else
+            # 交互式模式：强制输入
+            echo ""
+            log "请输入网关密钥（brokerKey），由总控提供，必填"
+            while true; do
+                read -p "brokerKey: " BROKER_KEY
+                if [ -n "$BROKER_KEY" ]; then
+                    break
+                else
+                    warn "brokerKey 不能为空，请重新输入"
+                fi
+            done
+            log "已设置 brokerKey: ${BROKER_KEY:0:16}..."
+        fi
     fi
     
     echo "$SUI_API_KEY" > /tmp/sui_api_key
