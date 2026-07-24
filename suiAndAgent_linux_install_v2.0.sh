@@ -133,19 +133,17 @@ get_config() {
     ask "$prompt" "$default"
 }
 
-# ====== 新增：处理数据库模板下载（仅交互式使用） ======
+# 处理s-ui数据库模板下载（仅交互式使用）
 handle_sui_db() {
     local DB_DIR="/usr/local/s-ui/db/"
     local DB_FILE="${DB_DIR}s-ui.db"
     
-    # 如果未提供 URL，则跳过
     if [ -z "$SUI_DB_URL" ]; then
         return 0
     fi
     
     log "检测到数据库模板链接，开始下载..."
     
-    # 备份已有数据库
     if [ -f "$DB_FILE" ]; then
         local BACKUP_FILE="${DB_FILE}.bak.$(date +%s)"
         log "发现已有数据库，备份到 $BACKUP_FILE"
@@ -154,20 +152,27 @@ handle_sui_db() {
     
     mkdir -p "$DB_DIR"
     if curl -sSL --connect-timeout 30 --max-time 120 "$SUI_DB_URL" -o "$DB_FILE"; then
-        if [ -s "$DB_FILE" ] && file "$DB_FILE" | grep -q "SQLite"; then
-            chmod 644 "$DB_FILE"
-            log "✅ 数据库模板下载成功并验证通过"
-            return 0
-        else
-            rm -f "$DB_FILE"
-            if [ -f "$BACKUP_FILE" ]; then
-                mv "$BACKUP_FILE" "$DB_FILE"
-                log "下载的文件无效，已恢复原有数据库"
+        # 使用 sqlite3 进行实际查询验证
+        if [ -s "$DB_FILE" ] && command -v sqlite3 &>/dev/null; then
+            if sqlite3 "$DB_FILE" "SELECT 1;" >/dev/null 2>&1; then
+                chmod 644 "$DB_FILE"
+                log "✅ 数据库模板下载成功并验证通过"
+                return 0
             else
-                log "下载的文件无效，已删除，将使用默认初始化"
+                log "数据库文件损坏或无法查询"
             fi
-            return 1
+        else
+            log "文件无效或 sqlite3 不可用"
         fi
+        # 验证失败，恢复备份
+        rm -f "$DB_FILE"
+        if [ -f "$BACKUP_FILE" ]; then
+            mv "$BACKUP_FILE" "$DB_FILE"
+            log "下载的文件无效，已恢复原有数据库"
+        else
+            log "下载的文件无效，已删除，将使用默认初始化"
+        fi
+        return 1
     else
         if [ -f "$BACKUP_FILE" ]; then
             mv "$BACKUP_FILE" "$DB_FILE"
@@ -178,7 +183,6 @@ handle_sui_db() {
         return 1
     fi
 }
-# ====== 新增结束 ======
 
 # ------------------------------
 # 1. 基础依赖
