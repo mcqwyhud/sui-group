@@ -12,11 +12,14 @@
 #   export AUTO_CREATE_INBOUND="true"
 #   export AUTO_VPS_ID="美国1"
 #   export GITHUB_TOKEN="your_github_token"
-#   export BROKER_KEY="your_broker_key"   # 新增必填
+#   export BROKER_KEY="your_broker_key"
 #   ./suiAndAgent_linux_install_v2.0.sh
 # ==============================
 
 set -e
+
+# 全局变量：记录是否为非交互式模式（由 main 初始化）
+NON_INTERACTIVE_MODE="false"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -28,7 +31,7 @@ err(){ echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 warn(){ echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
 # ------------------------------
-# 检测是否为非交互式模式
+# 检测是否为非交互式模式（仅基于环境变量）
 # ------------------------------
 is_non_interactive() {
     [ -n "$BROKER_HOST" ] || [ -n "$BROKER_PORT" ] || [ -n "$AGENT_NAME" ] || [ -n "$AUTO_CREATE_INBOUND" ]
@@ -121,7 +124,7 @@ get_config() {
     fi
     
     # 如果是非交互式模式但没有设置环境变量，使用默认值
-    if is_non_interactive; then
+    if [ "$NON_INTERACTIVE_MODE" = "true" ]; then
         if [ -n "$default" ]; then
             echo "$default"
             return 0
@@ -856,6 +859,13 @@ main() {
     log "开始安装 SUI + SUI-Agent v2.0..."
     echo "=========================================="
     
+    # 确定运行模式（基于初始环境变量）
+    if is_non_interactive; then
+        NON_INTERACTIVE_MODE="true"
+    else
+        NON_INTERACTIVE_MODE="false"
+    fi
+    
     if [ "$EUID" -ne 0 ]; then
         err "请使用 root 用户运行此脚本"
     fi
@@ -873,7 +883,7 @@ main() {
     
     install_base
     
-    # ====== 在安装 s-ui 之前，交互式询问并下载数据库
+    # ====== 在安装 s-ui 之前，交互式询问并下载数据库 ======
     prepare_db
     
     install_sui
