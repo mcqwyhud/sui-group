@@ -1,6 +1,6 @@
 #!/bin/bash
-# SUI External 一键安装脚本（修复完整版）
-# 在新版基础上完整补回旧版能力（非简化版）
+# SUI External 一键安装脚本（最终修复版）
+# 修复了 JVM 参数硬编码导致无法更新的问题，默认参数已适配 Spring Boot 实际需求
 
 set -e
 
@@ -40,8 +40,7 @@ detect_os() {
 # -------------------------------
 install_base() {
     print_info "检查基础工具..."
-
-    local tools=("wget" "curl" "tar" "jq")
+    local tools=("wget" "curl" "tar" "jq" "openssl")
     local missing=()
 
     for t in "${tools[@]}"; do
@@ -51,7 +50,6 @@ install_base() {
     [ ${#missing[@]} -eq 0 ] && return
 
     print_info "安装: ${missing[*]}"
-
     case "$OS" in
         ubuntu|debian)
             apt-get update -qq
@@ -82,44 +80,39 @@ install_java() {
 }
 
 # -------------------------------
-# 用户 & 目录
+# 用户 & 目录 & 默认配置
 # -------------------------------
 setup_user_and_dir() {
     print_info "创建用户与目录"
-
     id suiexternal &>/dev/null || useradd -r -s /bin/false suiexternal
-
     mkdir -p /opt/sui-external/{config,logs,uploads,conf,tmp,jprotobuf-cache}
 
+    # 【修改点1】：直接使用你测试通过的最佳参数作为默认值
     cat > /opt/sui-external/conf/jvm_opts <<EOF
--Xms64m -Xmx128m -XX:MaxMetaspaceSize=64m
+-Xms64m -Xmx128m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=32m -XX:MaxDirectMemorySize=32m
 EOF
 
     chown -R suiexternal:suiexternal /opt/sui-external
 }
 
 # -------------------------------
-# external.json 交互配置（保留你原逻辑）
+# external.json 交互配置
 # -------------------------------
 configure_external_json() {
     CONFIG="/opt/sui-external/config/external.json"
-
     DEFAULT_NAME="游戏对逻辑外服1"
     DEFAULT_TAG="游戏对逻辑外服"
     DEFAULT_PORT=28688
     DEFAULT_BROKER_HOST="127.0.0.1"
     DEFAULT_BROKER_PORT=10200
-
     EXISTING_PID=""
 
     if [ -f "$CONFIG" ]; then
         EXISTING_PID=$(jq -r '.pid' "$CONFIG" 2>/dev/null || echo "")
         print_warning "已存在 external.json"
-
         echo "1) 使用现有"
         echo "2) 重新配置"
         read -p "选择: " c
-
         [ "$c" = "1" ] && return
     fi
 
@@ -151,21 +144,18 @@ configure_external_json() {
   "webEnable": true
 }
 EOF
-
     chown suiexternal:suiexternal "$CONFIG"
 }
 
 # -------------------------------
-# GitHub 下载（完整旧版逻辑）
+# GitHub 下载
 # -------------------------------
 download_jar() {
     print_info "下载 JAR"
-
     REPO="mcqwyhud/sui-external"
     API="https://api.github.com/repos/$REPO/releases/latest"
-
+    
     [ -z "$GITHUB_TOKEN" ] && read -s -p "GitHub Token: " GITHUB_TOKEN && echo ""
-
     RESP=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$API")
 
     VERSION=$(echo "$RESP" | jq -r '.tag_name')
@@ -176,16 +166,14 @@ download_jar() {
     print_info "文件: $JAR"
 
     URL="https://api.github.com/repos/$REPO/releases/assets/$ID"
-
     wget --header="Authorization: token $GITHUB_TOKEN" \
          --header="Accept: application/octet-stream" \
          -O "/opt/sui-external/$JAR" "$URL"
-
     chown suiexternal:suiexternal "/opt/sui-external/$JAR"
 }
 
 # -------------------------------
-# systemd 服务（完整版）
+# systemd 服务
 # -------------------------------
 create_service() {
     JAR=$(ls /opt/sui-external/*.jar | head -1)
@@ -212,13 +200,14 @@ EOF
 }
 
 # -------------------------------
-# suie-cli（完整恢复版）
+# suie-cli（修复版 CLI）
 # -------------------------------
 create_custom_command() {
 cat > /usr/local/bin/sui-e <<'EOF'
 #!/bin/bash
 
 CONF=/opt/sui-external/conf/jvm_opts
+SERVICE_FILE=/etc/systemd/system/sui-external.service
 
 case "$1" in
 start) systemctl start sui-external ;;
@@ -226,85 +215,86 @@ stop) systemctl stop sui-external ;;
 restart) systemctl restart sui-external ;;
 status) systemctl status sui-external ;;
 logs) journalctl -u sui-external -f ;;
+
+# 查询参数
 jvm)
-    cat "$CONF"
+    # 兼容 sui-e jvm set "..."
+    if [ "$2" = "set" ] && [ -n "$3" ]; then
+        echo "$3" > "$CONF"
+        sed -i -E "s|^(ExecStart=/usr/bin/java ).*( -jar .*)$|\1$3\2|" "$SERVICE_FILE"
+        systemctl daemon-reload
+        echo "JVM 参数已更新并同步，请执行 sui-e restart 重启"
+    else
+        cat "$CONF"
+    fi
     ;;
+
+# 设置参数
 set-jvm)
+    if [ -z "$2" ]; then
+        echo "用法: sui-e set-jvm \"-Xms64m -Xmx128m -XX:MaxMetaspaceSize=128m ...\""
+        exit 1
+    fi
     echo "$2" > "$CONF"
+    sed -i -E "s|^(ExecStart=/usr/bin/java ).*( -jar .*)$|\1$2\2|" "$SERVICE_FILE"
     systemctl daemon-reload
-    echo "JVM已更新"
+    echo "JVM 参数已更新并同步，请执行 sui-e restart 重启"
     ;;
+
 *)
-    echo "sui-e start|stop|restart|status|logs|jvm|set-jvm"
+    echo "用法:"
+    echo "  sui-e start|stop|restart|status|logs"
+    echo "  sui-e jvm            # 查看当前参数"
+    echo "  sui-e set-jvm \"参数\"  # 设置参数"
     ;;
 esac
 EOF
-
 chmod +x /usr/local/bin/sui-e
 }
 
 # -------------------------------
-# 缓存清理（旧版恢复）
+# 缓存清理
 # -------------------------------
 cleanup_caches() {
     print_info "清理缓存"
-
     rm -rf /tmp/JPROTOBUF_CACHE_DIR || true
-
     mkdir -p /opt/sui-external/jprotobuf-cache
     mkdir -p /opt/sui-external/tmp
-
     chown -R suiexternal:suiexternal /opt/sui-external
 }
 
 # -------------------------------
-# 完整安装提示（你缺失的 show_complete）
+# 提示信息
 # -------------------------------
 show_complete() {
     echo ""
     echo "===================================="
     echo "SUI External 安装完成"
     echo "===================================="
-    echo ""
     echo "管理命令:"
-    echo "  sui-e start"
-    echo "  sui-e stop"
-    echo "  sui-e restart"
-    echo "  sui-e status"
+    echo "  sui-e start / stop / restart"
     echo "  sui-e logs"
     echo "  sui-e jvm"
     echo "  sui-e set-jvm \"...\""
     echo ""
-    echo "systemd:"
-    echo "  systemctl start sui-external"
-    echo ""
-    echo "配置: /opt/sui-external/config"
-    echo "日志: /opt/sui-external/logs"
-    echo ""
 }
 
 # -------------------------------
-# 主流程（不删你结构）
+# 主流程
 # -------------------------------
 main() {
     check_root
     detect_os
-
     install_base
     install_java
     setup_user_and_dir
-
     configure_external_json
-
     download_jar
     create_service
     create_custom_command
-
     cleanup_caches
-
     systemctl daemon-reload
     systemctl start sui-external
-
     show_complete
 }
 
