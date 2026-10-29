@@ -517,7 +517,7 @@ create_management_script() {
 
     cat > /usr/local/bin/sui-m << 'EOF'
 #!/bin/bash
-# SUI Master 管理脚本（包含交互式菜单）
+# SUI Master 管理脚本（包含交互式菜单，完美同步版）
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -526,6 +526,7 @@ NC='\033[0m'
 
 print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SERVICE="sui-master"
 SERVICE_FILE="/etc/systemd/system/sui-master.service"
@@ -565,9 +566,12 @@ set_jvm(){
     
     JVM_OPTS="$1 -Djava.io.tmpdir=/opt/sui-master/tmp -Djprotobuf.cache.dir=/opt/sui-master/jprotobuf-cache -Djprotobuf.cache.enable=true"
     
+    # 修复点：不仅替换 ExecStart，也同步替换 Environment 环境变量
     sed -i "s|^ExecStart=.*|ExecStart=/usr/bin/java ${JVM_OPTS} -jar ${JAR_FILE}|" "$SERVICE_FILE"
+    sed -i "s|^Environment=JAVA_OPTS=.*|Environment=JAVA_OPTS=${JVM_OPTS}|" "$SERVICE_FILE"
+    
     systemctl daemon-reload
-    print_info "JVM参数已更新"
+    print_info "JVM参数已更新并同步"
     
     read -p "是否立即重启 SUI Master 服务以应用新参数？(y/n): " confirm
     if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
