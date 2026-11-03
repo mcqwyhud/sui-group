@@ -200,7 +200,7 @@ EOF
 }
 
 # -------------------------------
-# suie-cli（修复版 CLI）
+# suie-cli（含更新命令的美化版 CLI）
 # -------------------------------
 create_custom_command() {
 cat > /usr/local/bin/sui-e <<'EOF'
@@ -209,43 +209,153 @@ cat > /usr/local/bin/sui-e <<'EOF'
 CONF=/opt/sui-external/conf/jvm_opts
 SERVICE_FILE=/etc/systemd/system/sui-external.service
 
-case "$1" in
-start) systemctl start sui-external ;;
-stop) systemctl stop sui-external ;;
-restart) systemctl restart sui-external ;;
-status) systemctl status sui-external ;;
-logs) journalctl -u sui-external -f ;;
+# 定义颜色
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+YELLOW='\033[0;33m'
+PURPLE='\033[0;35m'
+NC='\033[0m' # 恢复默认颜色
+GRAY='\033[0;90m'
 
-# 查询参数
+# 帮助信息函数
+usage() {
+    echo -e "${CYAN}================================================${NC}"
+    echo -e "        ${PURPLE}🚀 SUI External 管理工具 (sui-e)${NC}"
+    echo -e "${CYAN}================================================${NC}"
+    echo -e "${YELLOW}【 服务控制 】${NC}"
+    echo -e "  sui-e ${GREEN}start${NC}        启动服务"
+    echo -e "  sui-e ${GREEN}stop${NC}         停止服务"
+    echo -e "  sui-e ${GREEN}restart${NC}      重启服务"
+    echo -e "  sui-e ${GREEN}status${NC}       查看运行状态"
+    echo -e "  sui-e ${GREEN}logs${NC}         查看实时日志 (Ctrl+C 退出)"
+    echo ""
+    echo -e "${YELLOW}【 更新与参数 】${NC}"
+    echo -e "  sui-e ${GREEN}update${NC}       拉取最新版本并自动重启"
+    echo -e "  sui-e ${GREEN}jvm${NC}          查看当前 JVM 参数"
+    echo -e "  sui-e ${GREEN}set-jvm${NC} ${GRAY}\"-Xms... -Xmx...\"${NC}"
+    echo -e "                   设置新的 JVM 参数并同步到服务"
+    echo -e "${CYAN}================================================${NC}"
+}
+
+# 处理空输入
+if [ -z "$1" ]; then
+    usage
+    exit 0
+fi
+
+case "$1" in
+start) 
+    systemctl start sui-external 
+    echo -e "${GREEN}✔ 服务已启动${NC}"
+    ;;
+stop) 
+    systemctl stop sui-external 
+    echo -e "${GREEN}✔ 服务已停止${NC}"
+    ;;
+restart) 
+    systemctl restart sui-external 
+    echo -e "${GREEN}✔ 服务已重启${NC}"
+    ;;
+status) 
+    systemctl status sui-external 
+    ;;
+logs) 
+    journalctl -u sui-external -f 
+    ;;
+
+# 更新逻辑
+update)
+    echo -e "${CYAN}================================================${NC}"
+    echo -e "        ${PURPLE}🔄 SUI External 版本更新${NC}"
+    echo -e "${CYAN}================================================${NC}"
+    read -s -p "请输入 GitHub Token 以拉取最新版本: " TOKEN
+    echo ""
+    if [ -z "$TOKEN" ]; then
+        echo -e "${RED}✘ 错误: Token 不能为空！${NC}"
+        exit 1
+    fi
+
+    REPO="mcqwyhud/sui-external"
+    API="https://api.github.com/repos/$REPO/releases/latest"
+    
+    echo -e "${YELLOW}正在检查最新版本...${NC}"
+    RESP=$(curl -s -H "Authorization: token $TOKEN" "$API")
+
+    VERSION=$(echo "$RESP" | jq -r '.tag_name')
+    JAR=$(echo "$RESP" | jq -r '.assets[] | select(.name|endswith(".jar")) | .name' | head -1)
+    ID=$(echo "$RESP" | jq -r '.assets[] | select(.name|endswith(".jar")) | .id' | head -1)
+
+    if [ -z "$JAR" ] || [ "$JAR" = "null" ]; then
+        echo -e "${RED}✘ 获取版本信息失败，请检查 Token 权限或网络。${NC}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}✔ 发现最新版本: $VERSION${NC}"
+    echo -e "   文件: $JAR"
+
+    systemctl stop sui-external
+    echo -e "${YELLOW}✔ 服务已暂停，正在下载...${NC}"
+
+    URL="https://api.github.com/repos/$REPO/releases/assets/$ID"
+    wget --header="Authorization: token $TOKEN" \
+         --header="Accept: application/octet-stream" \
+         -O "/opt/sui-external/$JAR" "$URL"
+
+    if [ $? -eq 0 ]; then
+        chown suiexternal:suiexternal "/opt/sui-external/$JAR"
+        echo -e "${GREEN}✔ 下载完成，正在启动服务...${NC}"
+        systemctl start sui-external
+        echo -e "${GREEN}✔ 更新成功！当前版本: $VERSION${NC}"
+        
+        # 清理旧版 JAR（防止硬盘占用）
+        for old_jar in /opt/sui-external/*.jar; do
+            if [ "$(basename "$old_jar")" != "$JAR" ]; then
+                echo -e "${YELLOW}🗑 清理旧版本: $(basename "$old_jar")${NC}"
+                rm -f "$old_jar"
+            fi
+        done
+    else
+        echo -e "${RED}✘ 下载失败，正在恢复旧服务。${NC}"
+        systemctl start sui-external
+    fi
+    ;;
+
+# 查看/设置参数
 jvm)
-    # 兼容 sui-e jvm set "..."
     if [ "$2" = "set" ] && [ -n "$3" ]; then
         echo "$3" > "$CONF"
         sed -i -E "s|^(ExecStart=/usr/bin/java ).*( -jar .*)$|\1$3\2|" "$SERVICE_FILE"
         systemctl daemon-reload
-        echo "JVM 参数已更新并同步，请执行 sui-e restart 重启"
+        echo -e "${GREEN}✔ JVM 参数已更新并同步！${NC}"
+        echo -e "${YELLOW}⚠ 请执行 ${NC}sui-e restart${YELLOW} 使参数生效${NC}"
     else
-        cat "$CONF"
+        echo -e "${CYAN}当前 JVM 参数:${NC}"
+        echo -e "${GRAY}$(cat "$CONF")${NC}"
     fi
     ;;
 
 # 设置参数
 set-jvm)
     if [ -z "$2" ]; then
-        echo "用法: sui-e set-jvm \"-Xms64m -Xmx128m -XX:MaxMetaspaceSize=128m ...\""
+        echo -e "${RED}✘ 错误: 缺少参数！${NC}"
+        echo -e "用法: sui-e set-jvm ${GRAY}\"-Xms64m -Xmx128m ...\"${NC}"
         exit 1
     fi
     echo "$2" > "$CONF"
     sed -i -E "s|^(ExecStart=/usr/bin/java ).*( -jar .*)$|\1$2\2|" "$SERVICE_FILE"
     systemctl daemon-reload
-    echo "JVM 参数已更新并同步，请执行 sui-e restart 重启"
+    echo -e "${GREEN}✔ JVM 参数已更新并同步！${NC}"
+    echo -e "${YELLOW}⚠ 请执行 ${NC}sui-e restart${YELLOW} 使参数生效${NC}"
     ;;
 
+-h|--help|help)
+    usage
+    ;;
 *)
-    echo "用法:"
-    echo "  sui-e start|stop|restart|status|logs"
-    echo "  sui-e jvm            # 查看当前参数"
-    echo "  sui-e set-jvm \"参数\"  # 设置参数"
+    echo -e "${RED}✘ 未知命令: $1${NC}"
+    echo ""
+    usage
     ;;
 esac
 EOF
@@ -273,6 +383,7 @@ show_complete() {
     echo "===================================="
     echo "管理命令:"
     echo "  sui-e start / stop / restart"
+    echo "  sui-e update         # 更新最新版"
     echo "  sui-e logs"
     echo "  sui-e jvm"
     echo "  sui-e set-jvm \"...\""
