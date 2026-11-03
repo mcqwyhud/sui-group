@@ -1,6 +1,5 @@
 #!/bin/bash
-# SUI External 一键安装脚本（最终修复版）
-# 修复了 JVM 参数硬编码导致无法更新的问题，默认参数已适配 Spring Boot 实际需求
+# SUI External 一键安装脚本（交互式菜单版）
 
 set -e
 
@@ -87,7 +86,6 @@ setup_user_and_dir() {
     id suiexternal &>/dev/null || useradd -r -s /bin/false suiexternal
     mkdir -p /opt/sui-external/{config,logs,uploads,conf,tmp,jprotobuf-cache}
 
-    # 【修改点1】：直接使用你测试通过的最佳参数作为默认值
     cat > /opt/sui-external/conf/jvm_opts <<EOF
 -Xms64m -Xmx128m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=32m -XX:MaxDirectMemorySize=32m
 EOF
@@ -200,7 +198,7 @@ EOF
 }
 
 # -------------------------------
-# suie-cli（含更新命令的美化版 CLI）
+# suie-cli（包含交互式菜单与更新命令）
 # -------------------------------
 create_custom_command() {
 cat > /usr/local/bin/sui-e <<'EOF'
@@ -208,6 +206,7 @@ cat > /usr/local/bin/sui-e <<'EOF'
 
 CONF=/opt/sui-external/conf/jvm_opts
 SERVICE_FILE=/etc/systemd/system/sui-external.service
+SERVICE="sui-external"
 
 # 定义颜色
 GREEN='\033[0;32m'
@@ -215,7 +214,7 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 YELLOW='\033[0;33m'
 PURPLE='\033[0;35m'
-NC='\033[0m' # 恢复默认颜色
+NC='\033[0m'
 GRAY='\033[0;90m'
 
 # 帮助信息函数
@@ -238,90 +237,149 @@ usage() {
     echo -e "${CYAN}================================================${NC}"
 }
 
-# 处理空输入
-if [ -z "$1" ]; then
-    usage
+show_status(){
+    local status_color="${RED}"
+    local status_text="🔴 已停止"
+    if systemctl is-active --quiet $SERVICE; then
+        status_color="${GREEN}"
+        status_text="🟢 运行中"
+    fi
+
+    local jvm_text=$(cat "$CONF" 2>/dev/null || echo "默认")
+
+    echo ""
+    echo -e "${CYAN}================================================${NC}"
+    echo -e "  ${PURPLE}📊 SUI-EXTERNAL 当前状态${NC}"
+    echo -e "${CYAN}------------------------------------------------${NC}"
+    echo -e "  服务状态   : ${status_color}${status_text}${NC}"
+    echo -e "  JVM 参数   : ${YELLOW}${jvm_text}${NC}"
+    echo -e "${CYAN}================================================${NC}"
+}
+
+menu(){
+    while true; do
+        clear
+        show_status
+
+        echo -e "${CYAN}================================================${NC}"
+        echo -e "        ${PURPLE}🚀 SUI-E 服务管理控制台${NC}"
+        echo -e "${CYAN}================================================${NC}"
+        
+        echo -e "${YELLOW}【 服务控制 】${NC}"
+        echo -e "  ${GREEN}1)${NC} 启动服务          ${GREEN}2)${NC} 停止服务"
+        echo -e "  ${GREEN}3)${NC} 重启服务          ${GREEN}4)${NC} 查看实时日志"
+        
+        echo -e ""
+        echo -e "${YELLOW}【 状态与配置 】${NC}"
+        echo -e "  ${GREEN}5)${NC} 查看详细状态      ${GREEN}6)${NC} 修改 JVM 参数"
+        
+        echo -e ""
+        echo -e "${YELLOW}【 系统维护 】${NC}"
+        echo -e "  ${GREEN}7)${NC} 📦 更新 JAR 文件 (从 GitHub 拉取最新版本)"
+        
+        echo -e ""
+        echo -e "  ${RED}0)${NC} 🚪 退出管理菜单"
+        echo -e "${CYAN}================================================${NC}"
+        
+        read -p "请选择操作 [0-7]: " opt
+
+        case $opt in
+            1) systemctl start $SERVICE && echo -e "${GREEN}✔ 服务已启动${NC}" ;;
+            2) systemctl stop $SERVICE && echo -e "${GREEN}✔ 服务已停止${NC}" ;;
+            3) systemctl restart $SERVICE && echo -e "${GREEN}✔ 服务已重启${NC}" ;;
+            4) journalctl -u $SERVICE -f ;;
+            5) systemctl status $SERVICE ;;
+            6)
+                echo -e "${CYAN}当前 JVM 参数:${NC} $(cat "$CONF")"
+                echo ""
+                read -p "请输入新的 JVM 参数 (回车跳过): " j
+                if [ -n "$j" ]; then
+                    echo "$j" > "$CONF"
+                    sed -i -E "s|^(ExecStart=/usr/bin/java ).*( -jar .*)$|\1$j\2|" "$SERVICE_FILE"
+                    systemctl daemon-reload
+                    echo -e "${GREEN}✔ JVM 参数已更新并同步！${NC}"
+                    echo -e "${YELLOW}⚠ 请执行重启服务使参数生效${NC}"
+                fi
+                ;;
+            7) 
+                echo -e "${CYAN}================================================${NC}"
+                echo -e "        ${PURPLE}🔄 SUI External 版本更新${NC}"
+                echo -e "${CYAN}================================================${NC}"
+                read -s -p "请输入 GitHub Token 以拉取最新版本: " TOKEN
+                echo ""
+                if [ -z "$TOKEN" ]; then
+                    echo -e "${RED}✘ 错误: Token 不能为空！${NC}"
+                else
+                    REPO="mcqwyhud/sui-external"
+                    API="https://api.github.com/repos/$REPO/releases/latest"
+                    echo -e "${YELLOW}正在检查最新版本...${NC}"
+                    RESP=$(curl -s -H "Authorization: token $TOKEN" "$API")
+                    VERSION=$(echo "$RESP" | jq -r '.tag_name')
+                    JAR=$(echo "$RESP" | jq -r '.assets[] | select(.name|endswith(".jar")) | .name' | head -1)
+                    ID=$(echo "$RESP" | jq -r '.assets[] | select(.name|endswith(".jar")) | .id' | head -1)
+                    
+                    if [ -z "$JAR" ] || [ "$JAR" = "null" ]; then
+                        echo -e "${RED}✘ 获取版本信息失败，请检查 Token 权限或网络。${NC}"
+                    else
+                        echo -e "${GREEN}✔ 发现最新版本: $VERSION${NC}"
+                        systemctl stop $SERVICE
+                        echo -e "${YELLOW}✔ 服务已暂停，正在下载...${NC}"
+                        URL="https://api.github.com/repos/$REPO/releases/assets/$ID"
+                        wget --header="Authorization: token $TOKEN" \
+                             --header="Accept: application/octet-stream" \
+                             -O "/opt/sui-external/$JAR" "$URL"
+                        if [ $? -eq 0 ]; then
+                            chown suiexternal:suiexternal "/opt/sui-external/$JAR"
+                            echo -e "${GREEN}✔ 下载完成，正在启动服务...${NC}"
+                            systemctl start $SERVICE
+                            echo -e "${GREEN}✔ 更新成功！当前版本: $VERSION${NC}"
+                            for old_jar in /opt/sui-external/*.jar; do
+                                if [ "$(basename "$old_jar")" != "$JAR" ]; then
+                                    echo -e "${YELLOW}🗑 清理旧版本: $(basename "$old_jar")${NC}"
+                                    rm -f "$old_jar"
+                                fi
+                            done
+                        else
+                            echo -e "${RED}✘ 下载失败，正在恢复旧服务。${NC}"
+                            systemctl start $SERVICE
+                        fi
+                    fi
+                fi
+                ;;
+            0) exit 0 ;;
+            *) echo -e "${RED}✘ 无效选项${NC}" ;;
+        esac
+
+        echo ""
+        read -p "按回车键继续..."
+    done
+}
+
+# 处理空输入进入菜单
+if [ -z "$1" ] || [ "$1" = "menu" ]; then
+    menu
     exit 0
 fi
 
 case "$1" in
 start) 
-    systemctl start sui-external 
+    systemctl start $SERVICE 
     echo -e "${GREEN}✔ 服务已启动${NC}"
     ;;
 stop) 
-    systemctl stop sui-external 
+    systemctl stop $SERVICE 
     echo -e "${GREEN}✔ 服务已停止${NC}"
     ;;
 restart) 
-    systemctl restart sui-external 
+    systemctl restart $SERVICE 
     echo -e "${GREEN}✔ 服务已重启${NC}"
     ;;
 status) 
-    systemctl status sui-external 
+    systemctl status $SERVICE 
     ;;
 logs) 
-    journalctl -u sui-external -f 
+    journalctl -u $SERVICE -f 
     ;;
-
-# 更新逻辑
-update)
-    echo -e "${CYAN}================================================${NC}"
-    echo -e "        ${PURPLE}🔄 SUI External 版本更新${NC}"
-    echo -e "${CYAN}================================================${NC}"
-    read -s -p "请输入 GitHub Token 以拉取最新版本: " TOKEN
-    echo ""
-    if [ -z "$TOKEN" ]; then
-        echo -e "${RED}✘ 错误: Token 不能为空！${NC}"
-        exit 1
-    fi
-
-    REPO="mcqwyhud/sui-external"
-    API="https://api.github.com/repos/$REPO/releases/latest"
-    
-    echo -e "${YELLOW}正在检查最新版本...${NC}"
-    RESP=$(curl -s -H "Authorization: token $TOKEN" "$API")
-
-    VERSION=$(echo "$RESP" | jq -r '.tag_name')
-    JAR=$(echo "$RESP" | jq -r '.assets[] | select(.name|endswith(".jar")) | .name' | head -1)
-    ID=$(echo "$RESP" | jq -r '.assets[] | select(.name|endswith(".jar")) | .id' | head -1)
-
-    if [ -z "$JAR" ] || [ "$JAR" = "null" ]; then
-        echo -e "${RED}✘ 获取版本信息失败，请检查 Token 权限或网络。${NC}"
-        exit 1
-    fi
-
-    echo -e "${GREEN}✔ 发现最新版本: $VERSION${NC}"
-    echo -e "   文件: $JAR"
-
-    systemctl stop sui-external
-    echo -e "${YELLOW}✔ 服务已暂停，正在下载...${NC}"
-
-    URL="https://api.github.com/repos/$REPO/releases/assets/$ID"
-    wget --header="Authorization: token $TOKEN" \
-         --header="Accept: application/octet-stream" \
-         -O "/opt/sui-external/$JAR" "$URL"
-
-    if [ $? -eq 0 ]; then
-        chown suiexternal:suiexternal "/opt/sui-external/$JAR"
-        echo -e "${GREEN}✔ 下载完成，正在启动服务...${NC}"
-        systemctl start sui-external
-        echo -e "${GREEN}✔ 更新成功！当前版本: $VERSION${NC}"
-        
-        # 清理旧版 JAR（防止硬盘占用）
-        for old_jar in /opt/sui-external/*.jar; do
-            if [ "$(basename "$old_jar")" != "$JAR" ]; then
-                echo -e "${YELLOW}🗑 清理旧版本: $(basename "$old_jar")${NC}"
-                rm -f "$old_jar"
-            fi
-        done
-    else
-        echo -e "${RED}✘ 下载失败，正在恢复旧服务。${NC}"
-        systemctl start sui-external
-    fi
-    ;;
-
-# 查看/设置参数
 jvm)
     if [ "$2" = "set" ] && [ -n "$3" ]; then
         echo "$3" > "$CONF"
@@ -334,8 +392,6 @@ jvm)
         echo -e "${GRAY}$(cat "$CONF")${NC}"
     fi
     ;;
-
-# 设置参数
 set-jvm)
     if [ -z "$2" ]; then
         echo -e "${RED}✘ 错误: 缺少参数！${NC}"
@@ -348,7 +404,9 @@ set-jvm)
     echo -e "${GREEN}✔ JVM 参数已更新并同步！${NC}"
     echo -e "${YELLOW}⚠ 请执行 ${NC}sui-e restart${YELLOW} 使参数生效${NC}"
     ;;
-
+update)
+    echo -e "${RED}✘ 请在交互式菜单(sui-e)中操作更新，或重新运行安装脚本。${NC}"
+    ;;
 -h|--help|help)
     usage
     ;;
@@ -378,15 +436,15 @@ cleanup_caches() {
 # -------------------------------
 show_complete() {
     echo ""
-    echo "===================================="
-    echo "SUI External 安装完成"
-    echo "===================================="
-    echo "管理命令:"
-    echo "  sui-e start / stop / restart"
-    echo "  sui-e update         # 更新最新版"
-    echo "  sui-e logs"
-    echo "  sui-e jvm"
-    echo "  sui-e set-jvm \"...\""
+    echo -e "\033[0;36m================================================\033[0m"
+    echo -e "        \033[0;35m🎉 SUI External 安装完成！\033[0m"
+    echo -e "\033[0;36m================================================\033[0m"
+    echo -e "\033[1;33m【 管理命令 】\033[0m"
+    echo -e "  \033[0;32msui-e\033[0m             进入交互式管理菜单 (推荐)"
+    echo -e "  \033[0;32msui-e start\033[0m       启动服务"
+    echo -e "  \033[0;32msui-e stop\033[0m        停止服务"
+    echo -e "  \033[0;32msui-e logs\033[0m        查看实时日志"
+    echo -e "\033[0;36m================================================\033[0m"
     echo ""
 }
 
