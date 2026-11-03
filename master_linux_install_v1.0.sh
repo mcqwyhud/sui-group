@@ -5,16 +5,18 @@
 set -e
 
 # ============================================
-# 第一部分：颜色定义（共用）
+# 第一部分：颜色与输出定义（共用）
 # ============================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
 NC='\033[0m'
 
-print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_info() { echo -e "${GREEN}✔ [INFO]${NC} $1"; }
+print_error() { echo -e "${RED}✘ [ERROR]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}⚠ [WARN]${NC} $1"; }
 
 # ============================================
 # 第二部分：检查组件是否已安装
@@ -475,33 +477,26 @@ start_service() {
 
 show_complete() {
     echo ""
-    echo "=========================================="
-    echo -e "${GREEN}SUI Master 部署完成！${NC}"
-    echo "=========================================="
-    echo ""
-    echo "管理命令："
-    echo "  sui-m              # 进入交互式菜单"
-    echo "  sui-m start        # 启动服务"
-    echo "  sui-m stop         # 停止服务"
-    echo "  sui-m restart      # 重启服务"
-    echo "  sui-m status       # 查看状态"
-    echo "  sui-m logs         # 查看日志"
-    echo "  sui-m jvm          # 交互式修改 JVM 参数"
-    echo "  sui-m jvm set \"...\" # 直接设置 JVM 参数"
-    echo "  sui-m autorestart on|off # 管理自重启"
-    echo ""
-    echo "或者使用 systemctl："
-    echo "  systemctl start|stop|restart|status sui-master"
-    echo "  journalctl -u sui-master -f"
-    echo ""
-    echo "配置文件位置: /opt/sui-master/config/application.yml"
-    echo "日志文件位置: /opt/sui-master/logs/"
-    echo "数据库名称: s-ui"
-    echo "数据库密码: c123456"
-    echo ""
-    print_warning "首次启动后，请查看日志中的临时密码："
-    echo "  journalctl -u sui-master | grep 'Using generated security password'"
-    echo "  或查看日志文件: tail -f /opt/sui-master/logs/sui-master.log"
+    echo -e "${CYAN}================================================${NC}"
+    echo -e "        ${PURPLE}🎉 SUI Master 部署完成！${NC}"
+    echo -e "${CYAN}================================================${NC}"
+    echo -e "${YELLOW}【 管理命令 】${NC}"
+    echo -e "  ${GREEN}sui-m${NC}             进入交互式管理菜单 (推荐)"
+    echo -e "  ${GREEN}sui-m start${NC}       启动服务"
+    echo -e "  ${GREEN}sui-m stop${NC}        停止服务"
+    echo -e "  ${GREEN}sui-m restart${NC}     重启服务"
+    echo -e "  ${GREEN}sui-m logs${NC}        查看实时日志"
+    echo -e ""
+    echo -e "${YELLOW}【 目录与配置 】${NC}"
+    echo -e "  配置文件: ${GRAY}/opt/sui-master/config/application.yml${NC}"
+    echo -e "  日志文件: ${GRAY}/opt/sui-master/logs/${NC}"
+    echo -e "  数据库名: ${GRAY}s-ui${NC}"
+    echo -e "  数据库密: ${GRAY}c123456${NC}"
+    echo -e ""
+    echo -e "${YELLOW}【 重要提示 】${NC}"
+    echo -e "  首次启动请查看日志中的临时密码："
+    echo -e "  ${GRAY}journalctl -u sui-master | grep 'Using generated security password'${NC}"
+    echo -e "${CYAN}================================================${NC}"
     echo ""
 }
 
@@ -517,37 +512,49 @@ create_management_script() {
 
     cat > /usr/local/bin/sui-m << 'EOF'
 #!/bin/bash
-# SUI Master 管理脚本（包含交互式菜单，完美同步版）
+# SUI Master 管理脚本（包含交互式菜单，美化版）
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+GRAY='\033[0;90m'
 NC='\033[0m'
 
-print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_info() { echo -e "${GREEN}✔ [INFO]${NC} $1"; }
+print_warn() { echo -e "${YELLOW}⚠ [WARN]${NC} $1"; }
+print_error() { echo -e "${RED}✘ [ERROR]${NC} $1"; }
 
 SERVICE="sui-master"
 SERVICE_FILE="/etc/systemd/system/sui-master.service"
 JVM_CONF="/opt/sui-master/conf/jvm_opts"
 
 show_status(){
+    # 检查服务状态
+    local status_color="${RED}"
+    local status_text="🔴 已停止"
+    if systemctl is-active --quiet $SERVICE; then
+        status_color="${GREEN}"
+        status_text="🟢 运行中"
+    fi
+
+    # 检查自重启
+    local restart_text="${GREEN}✅ 开启(on-failure)${NC}"
+    if grep -q "^Restart=no" $SERVICE_FILE 2>/dev/null; then
+        restart_text="${RED}❌ 关闭${NC}"
+    fi
+
+    local jvm_text=$(cat "$JVM_CONF" 2>/dev/null || echo "默认")
+
     echo ""
-    echo "=============================="
-    echo " SUI-MASTER 状态"
-    echo "=============================="
-
-    systemctl is-active --quiet $SERVICE && echo "服务状态: 🟢 运行中" || echo "服务状态: 🔴 已停止"
-
-    echo -n "自重启策略: "
-    grep -q "^Restart=no" $SERVICE_FILE 2>/dev/null && echo "❌ 关闭" || echo "✅ 开启(on-failure)"
-
-    echo -n "JVM参数: "
-    cat "$JVM_CONF" 2>/dev/null || echo "默认"
-
-    echo "=============================="
-    echo ""
+    echo -e "${CYAN}================================================${NC}"
+    echo -e "  ${PURPLE}📊 SUI-MASTER 当前状态${NC}"
+    echo -e "${CYAN}------------------------------------------------${NC}"
+    echo -e "  服务状态   : ${status_color}${status_text}${NC}"
+    echo -e "  自重启策略 : ${restart_text}"
+    echo -e "  JVM 参数   : ${YELLOW}${jvm_text}${NC}"
+    echo -e "${CYAN}================================================${NC}"
 }
 
 show_jvm(){
@@ -566,7 +573,6 @@ set_jvm(){
     
     JVM_OPTS="$1 -Djava.io.tmpdir=/opt/sui-master/tmp -Djprotobuf.cache.dir=/opt/sui-master/jprotobuf-cache -Djprotobuf.cache.enable=true"
     
-    # 修复点：不仅替换 ExecStart，也同步替换 Environment 环境变量
     sed -i "s|^ExecStart=.*|ExecStart=/usr/bin/java ${JVM_OPTS} -jar ${JAR_FILE}|" "$SERVICE_FILE"
     sed -i "s|^Environment=JAVA_OPTS=.*|Environment=JAVA_OPTS=${JVM_OPTS}|" "$SERVICE_FILE"
     
@@ -607,67 +613,75 @@ autorestart(){
 
 menu(){
     while true; do
+        clear # 每次循环清屏，让界面更干净
         show_status
 
-        echo "========== SUI-M 菜单 =========="
-        echo "1) 启动服务"
-        echo "2) 停止服务"
-        echo "3) 重启服务"
-        echo "4) 查看日志"
-        echo "5) JVM 参数"
-        echo "6) 自重启 开启"
-        echo "7) 自重启 关闭"
-        echo "8) 服务状态"
-        echo "9) 更新 JAR (从GitHub拉取最新)"
-        echo "0) 退出"
-        echo "================================"
-        read -p "请选择操作: " opt
+        echo -e "${CYAN}================================================${NC}"
+        echo -e "        ${PURPLE}🚀 SUI-M 服务管理控制台${NC}"
+        echo -e "${CYAN}================================================${NC}"
+        
+        echo -e "${YELLOW}【 服务控制 】${NC}"
+        echo -e "  ${GREEN}1)${NC} 启动服务          ${GREEN}2)${NC} 停止服务"
+        echo -e "  ${GREEN}3)${NC} 重启服务          ${GREEN}4)${NC} 查看实时日志"
+        
+        echo -e ""
+        echo -e "${YELLOW}【 状态与配置 】${NC}"
+        echo -e "  ${GREEN}5)${NC} 查看详细状态      ${GREEN}6)${NC} 修改 JVM 参数"
+        echo -e "  ${GREEN}7)${NC} 开启自重启        ${GREEN}8)${NC} 关闭自重启"
+        
+        echo -e ""
+        echo -e "${YELLOW}【 系统维护 】${NC}"
+        echo -e "  ${GREEN}9)${NC} 📦 更新 JAR 文件 (从 GitHub 拉取最新版本)"
+        
+        echo -e ""
+        echo -e "  ${RED}0)${NC} 🚪 退出管理菜单"
+        echo -e "${CYAN}================================================${NC}"
+        
+        read -p "请选择操作 [0-9]: " opt
 
         case $opt in
-            1) systemctl start $SERVICE ;;
-            2) systemctl stop $SERVICE ;;
-            3) systemctl restart $SERVICE ;;
+            1) systemctl start $SERVICE && print_info "已启动" ;;
+            2) systemctl stop $SERVICE && print_info "已停止" ;;
+            3) systemctl restart $SERVICE && print_info "已重启" ;;
             4) journalctl -u $SERVICE -f ;;
-            5)
-                echo "当前JVM:"
-                show_jvm
+            5) systemctl status $SERVICE ;;
+            6)
+                echo -e "${CYAN}当前 JVM 参数:${NC} $(show_jvm)"
                 echo ""
-                read -p "输入新JVM参数(回车跳过): " j
+                read -p "请输入新的 JVM 参数 (回车跳过): " j
                 [ -n "$j" ] && set_jvm "$j"
                 ;;
-            6) autorestart on ;;
-            7) autorestart off ;;
-            8) systemctl status $SERVICE ;;
+            7) autorestart on ;;
+            8) autorestart off ;;
             9) 
-                print_info "正在更新 JAR 文件..."
-                # 调用安装脚本的下载功能
+                echo -e "${YELLOW}正在准备更新...${NC}"
                 if [ -f "/tmp/update_jar.sh" ]; then
                     bash /tmp/update_jar.sh
                 else
-                    print_error "更新功能不可用，请重新运行安装脚本"
+                    print_error "更新功能不可用，请重新运行一键安装脚本进行覆盖更新。"
                 fi
                 ;;
             0) exit 0 ;;
-            *) print_warn "无效选项" ;;
+            *) print_warn "无效选项，请重新输入" ;;
         esac
 
         echo ""
-        read -p "按回车继续..."
+        read -p "按回车键继续..."
     done
 }
 
 case "$1" in
     start)
         systemctl start $SERVICE
-        echo "SUI Master 服务已启动"
+        echo -e "${GREEN}✔ SUI Master 服务已启动${NC}"
         ;;
     stop)
         systemctl stop $SERVICE
-        echo "SUI Master 服务已停止"
+        echo -e "${GREEN}✔ SUI Master 服务已停止${NC}"
         ;;
     restart)
         systemctl restart $SERVICE
-        echo "SUI Master 服务已重启"
+        echo -e "${GREEN}✔ SUI Master 服务已重启${NC}"
         ;;
     status)
         systemctl status $SERVICE
@@ -702,15 +716,18 @@ case "$1" in
         menu
         ;;
     *)
-        echo "用法:"
-        echo "  sui-m              # 进入交互式菜单"
-        echo "  sui-m start        # 启动服务"
-        echo "  sui-m stop         # 停止服务"
-        echo "  sui-m restart      # 重启服务"
-        echo "  sui-m status       # 查看状态"
-        echo "  sui-m logs         # 查看日志"
-        echo "  sui-m jvm [show|set \"JVM_OPTS\"]"
-        echo "  sui-m autorestart on|off"
+        echo -e "${CYAN}================================================${NC}"
+        echo -e "        ${PURPLE}🚀 SUI Master 管理工具${NC}"
+        echo -e "${CYAN}================================================${NC}"
+        echo -e "  sui-m              进入交互式菜单"
+        echo -e "  sui-m start        启动服务"
+        echo -e "  sui-m stop         停止服务"
+        echo -e "  sui-m restart      重启服务"
+        echo -e "  sui-m status       查看详细状态"
+        echo -e "  sui-m logs         查看实时日志"
+        echo -e "  sui-m jvm          查看/修改 JVM"
+        echo -e "  sui-m autorestart  配置自重启"
+        echo -e "${CYAN}================================================${NC}"
         ;;
 esac
 EOF
@@ -780,13 +797,11 @@ main() {
     cat > /tmp/update_jar.sh << 'EOF'
 #!/bin/bash
 # JAR 更新脚本
-print_info() { echo -e "\033[0;32m[INFO]\033[0m $1"; }
-print_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
+print_info() { echo -e "\033[0;32m✔ [INFO]\033[0m $1"; }
+print_error() { echo -e "\033[0;31m✘ [ERROR]\033[0m $1"; }
 
 # 重新下载 JAR
 if [ -f "/opt/sui-master/conf/jvm_opts" ]; then
-    # 这里直接调用主脚本的下载函数，但因为是独立脚本，需要重新实现
-    # 简单起见，提示用户运行完整更新
     print_info "请运行完整安装脚本来更新:"
     echo "  bash <(curl -Ls https://raw.githubusercontent.com/mcqwyhud/sui-group/main/master_linux_install_v1.0.sh)"
 else
